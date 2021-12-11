@@ -430,6 +430,14 @@ static bool handle_read(int fd) {
                         if (!hlen) {
                             return msg_send(fd, MSG_ERR);
                         }
+                        struct stat s;
+                        /* ensure the homedir exists and is a directory,
+                         * this also ensures the path is safe to use in
+                         * unsanitized contexts without escaping
+                         */
+                        if (stat(it->homedir, &s) || !S_ISDIR(s.st_mode)) {
+                            return msg_send(fd, MSG_ERR);
+                        }
                     }
                     /* acknowledge the session */
                     print_dbg("msg: welcome %u (%s)\n", it->uid, it->homedir);

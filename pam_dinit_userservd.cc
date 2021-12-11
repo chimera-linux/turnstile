@@ -94,6 +94,10 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
     if (hlen > HDIRLEN_MAX) {
         goto err;
     }
+    /* this is verified serverside too but bail out early if needed */
+    if (struct stat s; stat(hdir, &s) || !S_ISDIR(s.st_mode)) {
+        goto err;
+    }
 
     if (connect(
         *sock, reinterpret_cast<sockaddr const *>(&saddr), sizeof(saddr)
