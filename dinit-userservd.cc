@@ -233,11 +233,14 @@ static bool dinit_start(session &sess) {
                 exit(1);
             }
         }
-        /* make up an environment, only need HOME */
+        /* make up an environment */
         char uenv[HDIRLEN_MAX + 5];
+        char euid[udig + 5], egid[udig + 5];
         std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
+        std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
+        std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
         char const *envp[] = {
-            uenv, nullptr
+            uenv, euid, egid, nullptr
         };
         /* 6 args reserved + whatever service dirs + terminator */
         char const *argp[6 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
