@@ -1,0 +1,7 @@
+# dinit-userservd service
+
+type            = process
+command         = /usr/bin/dinit-userservd
+depends-on      = early-rcboot
+smooth-recovery = true
+logfile         = /var/log/dinit-userservd.log
