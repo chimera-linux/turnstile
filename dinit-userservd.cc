@@ -260,6 +260,8 @@ static bool dinit_start(session &sess) {
             argp[cidx++] = servpaths[i];
         }
         argp[cidx] = nullptr;
+        /* restore umask to user default */
+        umask(022);
         /* fire */
         execvpe("dinit", const_cast<char **>(argp), const_cast<char **>(envp));
     } else if (pid < 0) {
