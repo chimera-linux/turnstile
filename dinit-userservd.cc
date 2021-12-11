@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <cassert>
 #include <climits>
+#include <ctime>
 #include <limits>
 #include <vector>
 #include <algorithm>
@@ -36,6 +37,13 @@
 #include "protocol.hh"
 
 static bool debug = false;
+/* timeout in case the dinit --user does not signal readiness
+ *
+ * we keep a timer for each waiting session, if no readiness is received
+ * within that timespan, the service manager is terminated and failure
+ * is issued to all the connections
+ */
+static constexpr time_t const dinit_timeout = 60;
 
 /* session information: contains a list of connections (which also provide
  * a way to know when to end the session, as the connection is persistent
@@ -78,6 +86,12 @@ struct pending_conn {
     }
 };
 
+struct session_timer {
+    timer_t timer{};
+    sigevent sev{};
+    unsigned int uid = 0;
+};
+
 static std::vector<session> sessions;
 static std::vector<pending_conn> pending_conns;
 
@@ -87,6 +101,8 @@ static std::vector<pollfd> fds;
 static int ctl_sock;
 /* requests for new FIFOs; picked up by the event loop and cleared */
 static std::vector<pollfd> fifos;
+/* timer list */
+static std::vector<session_timer> timers;
 
 #define print_dbg(...) if (debug) { printf(__VA_ARGS__); }
 
@@ -218,6 +234,29 @@ static bool dinit_start(session &sess) {
         auto &pfd = fifos.emplace_back();
         pfd.fd = sess.userpipe;
         pfd.events = POLLIN | POLLHUP;
+    }
+    /* set up the timer, issue SIGLARM when it fires */
+    print_dbg("dinit: timer set\n");
+    {
+        auto &tm = timers.emplace_back();
+        tm.uid = sess.uid;
+        tm.sev.sigev_notify = SIGEV_SIGNAL;
+        tm.sev.sigev_signo = SIGALRM;
+        /* create timer, drop if it fails */
+        if (timer_create(CLOCK_MONOTONIC, &tm.sev, &tm.timer) < 0) {
+            perror("dinit: timer_create failed");
+            timers.pop_back();
+            return false;
+        }
+        /* arm timer, drop if it fails */
+        itimerspec tval{};
+        tval.it_value.tv_sec = dinit_timeout;
+        if (timer_settime(tm.timer, 0, &tval, nullptr) < 0) {
+            perror("dinit: timer_settime failed");
+            timer_delete(tm.timer);
+            timers.pop_back();
+            return false;
+        }
     }
     /* launch dinit */
     print_dbg("dinit: launch\n");
@@ -572,10 +611,14 @@ int main() {
     if (signal(SIGCHLD, sighandler) == SIG_ERR) {
         perror("signal failed");
     }
+    if (signal(SIGALRM, sighandler) == SIG_ERR) {
+        perror("signal failed");
+    }
 
     /* prealloc a bunch of space */
     pending_conns.reserve(8);
     sessions.reserve(16);
+    timers.reserve(16);
     fds.reserve(64);
     fifos.reserve(8);
 
@@ -647,7 +690,31 @@ int main() {
                 perror("signal read failed");
                 goto do_compact;
             }
-            /* this is a SIGCHLD (only registered handler) */
+            if (sign == SIGALRM) {
+                print_dbg("userservd: sigalrm\n");
+                /* timer, take the closest one */
+                auto &tm = timers.front();
+                /* find its session */
+                for (auto &sess: sessions) {
+                    if (sess.uid != tm.uid) {
+                        continue;
+                    }
+                    print_dbg("userservd: drop session %u\n", sess.uid);
+                    /* notify errors; this will make clients close their
+                     * connections, and once all of them are gone, the
+                     * server can safely terminate it
+                     */
+                    for (auto c: sess.conns) {
+                        msg_send(c, MSG_ERR);
+                    }
+                    break;
+                }
+                print_dbg("userservd: drop timer\n");
+                timer_delete(tm.timer);
+                timers.erase(timers.begin());
+                goto signal_done;
+            }
+            /* this is a SIGCHLD */
             pid_t wpid;
             int status;
             print_dbg("userservd: sigchld\n");
@@ -664,6 +731,7 @@ int main() {
                 }
             }
         }
+signal_done:
         /* check incoming connections on control socket */
         if (fds[1].revents) {
             for (;;) {
@@ -711,6 +779,17 @@ int main() {
                         for (auto c: sess->conns) {
                             if (send(c, &msg, sizeof(msg), 0) < 0) {
                                 perror("conn: send failed");
+                            }
+                        }
+                        /* disarm an associated timer */
+                        print_dbg("dinit: disarm timer\n");
+                        for (
+                            auto it = timers.begin(); it != timers.end(); ++it
+                        ) {
+                            if (it->uid == sess->uid) {
+                                timer_delete(it->timer);
+                                timers.erase(it);
+                                break;
                             }
                         }
                         sess->dinit_wait = false;

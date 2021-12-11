@@ -9,7 +9,10 @@ project(
     license: 'BSD-2-Clause'
 )
 
+cpp = meson.get_compiler('cpp')
+
 pam_dep = dependency('pam', required: true)
+rt_dep = cpp.find_library('rt', required: false)
 
 daemon = executable(
     'dinit-userservd', 'dinit-userservd.cc',
@@ -22,7 +25,7 @@ pam_mod = shared_module(
     install: true,
     install_dir: join_paths(get_option('libdir'), 'security'),
     name_prefix: '',
-    dependencies: [pam_dep],
+    dependencies: [pam_dep, rt_dep],
     gnu_symbol_visibility: 'hidden'
 )
 
