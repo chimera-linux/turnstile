@@ -182,7 +182,7 @@ static bool dinit_start(session &sess) {
         /* wait for a service directory */
         std::fprintf(f, "waits-for.d = %s/boot.d\n", udir);
         /* readiness notification */
-        std::fprintf(f, "command = sh -c \"printf 1 > '%s'\"\n", ufifo);
+        std::fprintf(f, "command = sh -c \"printf 1 > '%s' || :\"\n", ufifo);
         std::fclose(f);
         /* set perms otherwise we would infinite loop */
         if (chown(uboot, sess.uid, sess.gid) < 0) {
