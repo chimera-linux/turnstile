@@ -106,16 +106,21 @@ static std::vector<session_timer> timers;
 
 #define print_dbg(...) if (debug) { printf(__VA_ARGS__); }
 
+static constexpr int const UID_DIGITS = \
+    std::numeric_limits<unsigned int>::digits10;
+
 static void dinit_clean(session &sess) {
-    char buf[512];
+    char buf[sizeof(USER_FIFO) + UID_DIGITS];
     print_dbg("dinit: cleanup %u\n", sess.uid);
     /* close the fifo */
     if (sess.userpipe != -1) {
         std::snprintf(buf, sizeof(buf), USER_FIFO, sess.uid);
         print_dbg("dinit: close %s\n", buf);
         /* close best we can */
-        static_cast<void>(close(sess.userpipe));
-        static_cast<void>(unlink(buf));
+        close(sess.userpipe);
+        unlink(buf);
+        std::snprintf(buf, sizeof(buf), USER_PATH, sess.uid);
+        rmdir(buf);
         for (auto &pfd: fds) {
             if (pfd.fd == sess.userpipe) {
                 pfd.fd = -1;
@@ -129,16 +134,14 @@ static void dinit_clean(session &sess) {
 
 /* stop the dinit instance for a session */
 static void dinit_stop(session &sess) {
-    static constexpr int udig = std::numeric_limits<unsigned int>::digits10;
     /* temporary services dir */
-    char buf[sizeof(USER_DIR) + udig + 5];
+    char buf[sizeof(USER_DIR) + UID_DIGITS + 5];
     print_dbg("dinit: stop\n");
     if (sess.dinit_pid != -1) {
         print_dbg("dinit: term\n");
         kill(sess.dinit_pid, SIGTERM);
         sess.dinit_pid = -1;
         sess.dinit_wait = true;
-        dinit_clean(sess);
         /* remove the generated service directory best we can
          *
          * it would be pretty harmless to just leave it too
@@ -146,9 +149,10 @@ static void dinit_stop(session &sess) {
         std::snprintf(buf, sizeof(buf), USER_DIR"/boot", sess.uid);
         std::memcpy(std::strstr(buf, "XXXXXX"), sess.dinit_tmp, 6);
         print_dbg("dinit: remove %s\n", buf);
-        static_cast<void>(unlink(buf));
+        unlink(buf);
         *std::strrchr(buf, '/') = '\0';
-        static_cast<void>(rmdir(buf));
+        rmdir(buf);
+        dinit_clean(sess);
     }
 }
 
@@ -161,10 +165,27 @@ static constexpr char const *servpaths[] = {
 
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
-    static constexpr int udig = std::numeric_limits<unsigned int>::digits10;
+    /* user dir */
+    char rdir[sizeof(USER_PATH) + UID_DIGITS];
+    std::snprintf(rdir, sizeof(rdir), USER_PATH, sess.uid);
     /* temporary services dir */
-    char tdir[sizeof(USER_DIR) + udig];
+    char tdir[sizeof(USER_DIR) + UID_DIGITS];
     std::snprintf(tdir, sizeof(tdir), USER_DIR, sess.uid);
+    /* create /run/dinit-userservd/$UID if non-existent */
+    {
+        struct stat pstat;
+        if (stat(rdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            if (mkdir(rdir, 0700)) {
+                perror("dinit: mkdir($UID) failed");
+                return false;
+            }
+            if (chown(rdir, sess.uid, sess.gid) < 0) {
+                perror("dinit: chown($UID) failed");
+                rmdir(rdir);
+                return false;
+            }
+        }
+    }
     /* create temporary services dir */
     if (!mkdtemp(tdir)) {
         perror("dinit: mkdtemp failed");
@@ -175,11 +196,11 @@ static bool dinit_start(session &sess) {
     std::memcpy(sess.dinit_tmp, tdir + std::strlen(tdir) - 6, 6);
     if (chown(tdir, sess.uid, sess.gid) < 0) {
         perror("dinit: chown failed");
-        static_cast<void>(rmdir(tdir));
+        rmdir(tdir);
         return false;
     }
     /* user fifo path */
-    char ufifo[sizeof(USER_FIFO) + udig];
+    char ufifo[sizeof(USER_FIFO) + UID_DIGITS];
     std::snprintf(ufifo, sizeof(ufifo), USER_FIFO, sess.uid);
     /* user services dir */
     char udir[HDIRLEN_MAX + 32];
@@ -206,14 +227,14 @@ static bool dinit_start(session &sess) {
         /* set perms otherwise we would infinite loop */
         if (chown(uboot, sess.uid, sess.gid) < 0) {
             perror("dinit: chown failed");
-            static_cast<void>(unlink(uboot));
+            unlink(uboot);
             return false;
         }
     }
     /* lazily set up user fifo */
     if (sess.userpipe == -1) {
         /* create a named pipe */
-        static_cast<void>(unlink(ufifo));
+        unlink(ufifo);
         if (mkfifo(ufifo, 0600) < 0) {
             perror("dinit: mkfifo failed");
             return false;
@@ -221,14 +242,14 @@ static bool dinit_start(session &sess) {
         /* user fifo is owned by the user */
         if (chown(ufifo, sess.uid, sess.gid) < 0) {
             perror("dinit: chown failed");
-            static_cast<void>(unlink(ufifo));
+            unlink(ufifo);
             return false;
         }
         /* get its file descriptor */
         sess.userpipe = open(ufifo, O_RDONLY | O_NONBLOCK);
         if (sess.userpipe < 0) {
             perror("dinit: open failed");
-            static_cast<void>(unlink(ufifo));
+            unlink(ufifo);
             return false;
         }
         auto &pfd = fifos.emplace_back();
@@ -274,8 +295,8 @@ static bool dinit_start(session &sess) {
         }
         /* make up an environment */
         char uenv[HDIRLEN_MAX + 5];
-        char rundir[sizeof("XDG_RUNTIME_DIR=/run/user/") + udig + 1];
-        char euid[udig + 5], egid[udig + 5];
+        char rundir[sizeof("XDG_RUNTIME_DIR=/run/user/") + UID_DIGITS + 1];
+        char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
         std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
         std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
         std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
@@ -583,7 +604,7 @@ static bool sock_new(char const *path, int &sock) {
 
     std::memcpy(un.sun_path, path, plen + 1);
     /* no need to check this */
-    static_cast<void>(unlink(path));
+    unlink(path);
 
     if (bind(sock, reinterpret_cast<sockaddr const *>(&un), sizeof(un)) < 0) {
         perror("bind failed");
@@ -608,7 +629,7 @@ static bool sock_new(char const *path, int &sock) {
     return true;
 
 fail:
-    static_cast<void>(unlink(path));
+    unlink(path);
     close(sock);
     return false;
 }
