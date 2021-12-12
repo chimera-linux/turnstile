@@ -274,12 +274,18 @@ static bool dinit_start(session &sess) {
         }
         /* make up an environment */
         char uenv[HDIRLEN_MAX + 5];
+        char rundir[sizeof("XDG_RUNTIME_DIR=/run/user/") + udig + 1];
         char euid[udig + 5], egid[udig + 5];
         std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
         std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
         std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
+        std::snprintf(
+            rundir, sizeof(rundir), "XDG_RUNTIME_DIR=/run/user/%u", sess.uid
+        );
         char const *envp[] = {
-            uenv, euid, egid, nullptr
+            uenv, euid, egid,
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            nullptr
         };
         /* 6 args reserved + whatever service dirs + terminator */
         char const *argp[6 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
