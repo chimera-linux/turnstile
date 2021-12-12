@@ -2,6 +2,6 @@
 
 type            = process
 command         = /usr/bin/dinit-userservd
-depends-on      = early-rcboot
+depends-on      = elogind
 smooth-recovery = true
 logfile         = /var/log/dinit-userservd.log
