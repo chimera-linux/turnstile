@@ -62,7 +62,7 @@ script is provided as a wrapper. Therefore, you can write services like:
 
 ```
 type = process
-command = dinit-dbus-run /your/command arguments
+command = /usr/bin/dinit-run-dbus your-command arguments
 ...
 ```
 
