@@ -1,3 +1,4 @@
 #!/bin/sh
 
-exec env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/`id -u`/bus "$@"
+exec env XDG_RUNTIME_DIR=/run/user/`id -u` \
+         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/`id -u`/bus "$@"
