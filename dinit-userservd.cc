@@ -283,7 +283,7 @@ static bool dinit_start(session &sess) {
             rundir, sizeof(rundir), "XDG_RUNTIME_DIR=/run/user/%u", sess.uid
         );
         char const *envp[] = {
-            uenv, euid, egid,
+            uenv, euid, egid, rundir,
             "PATH=/usr/local/bin:/usr/bin:/bin",
             nullptr
         };
