@@ -3,7 +3,11 @@
 This is a daemon and a PAM module to handle user services management with the
 `dinit` init system and service manager (https://github.com/davmac314/dinit).
 
-It was created for the needs of the Chimera Linux project.
+It was created for the needs of the Chimera Linux project. It is not expected
+to work properly anywhere else by default (those use cases are unsupported),
+and issues or feature requests specific to other environments will not be
+addressed. Patches may be accepted, provided they are not disruptive or
+introduce excessive complexity.
 
 ## How it works
 
@@ -68,4 +72,4 @@ command = /usr/bin/dinit-run-dbus your-command arguments
 
 ## TODO
 
-* Do not hardcode to things to make it easier to use for other projects.
+* Do not hardcode things to make it easier to use for other projects.
