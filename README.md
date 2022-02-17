@@ -30,7 +30,11 @@ receives a connection, it will negotiate a session with the PAM module
 and upon first login of each user, spawn a user `dinit` instance.
 
 This instance is supervised, if it fails in any way it gets automatically
-restarted.
+restarted. It runs outside of the login itself, as only one instance must
+exist per user (who can have multiple logins) and it only exists once the
+last login has logged out. This means that environment variables of the
+login do not exist within the user instance by default, and they must be
+exported into it through other means.
 
 It will register the following service directories:
 
@@ -61,14 +65,9 @@ the login environment.
 That way it is possible to manage the session bus as a user service without
 having to spawn it on-demand.
 
-For user services that need to be run within the session, the `dinit-run-dbus`
-script is provided as a wrapper. Therefore, you can write services like:
-
-```
-type = process
-command = /usr/bin/dinit-run-dbus your-command arguments
-...
-```
+User services making use of the bus need to ensure that the variable is
+exported in their launch environment in some way, as the service manager
+runs outside of the user's login session.
 
 ## TODO
 
