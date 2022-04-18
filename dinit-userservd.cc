@@ -26,6 +26,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -52,37 +53,47 @@ static constexpr time_t const dinit_timeout = 60;
  * - the running service manager instance PID
  * - the user and group ID of the session's user
  * - a file descriptor for the dinit readiness notification FIFO
- * - whether dinit is currently waiting for readiness notificatio
+ * - whether dinit is currently waiting for readiness notification
  */
 struct session {
     std::vector<int> conns{};
     char *homedir = nullptr;
+    char *rundir = nullptr;
     char dinit_tmp[6];
     pid_t dinit_pid = -1;
     unsigned int uid = 0;
     unsigned int gid = 0;
     int userpipe = -1;
     bool dinit_wait = true;
+    bool manage_rdir = false;
 
     ~session() {
         std::free(homedir);
+        std::free(rundir);
     }
 };
 
 struct pending_conn {
-    pending_conn(): pending_uid{1}, pending_gid{1}, pending_hdir{1} {}
+    pending_conn():
+        pending_uid{1}, pending_gid{1}, pending_hdir{1},
+        pending_rdir{1}, managed_rdir{0}
+    {}
     int conn = -1;
     char *homedir = nullptr;
+    char *rundir = nullptr;
     unsigned int uid = 0;
     unsigned int gid = 0;
-    unsigned int hdirleft = 0;
-    unsigned int hdirgot  = 0;
+    unsigned int dirleft = 0;
+    unsigned int dirgot  = 0;
     unsigned int pending_uid: 1;
     unsigned int pending_gid: 1;
     unsigned int pending_hdir: 1;
+    unsigned int pending_rdir: 1;
+    unsigned int managed_rdir: 1;
 
     ~pending_conn() {
         std::free(homedir);
+        std::free(rundir);
     }
 };
 
@@ -108,6 +119,125 @@ static std::vector<session_timer> timers;
 
 static constexpr int const UID_DIGITS = \
     std::numeric_limits<unsigned int>::digits10;
+
+static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
+    char *sl = std::strchr(rundir + 1, '/');
+    struct stat dstat;
+    print_dbg("rundir: make directory %s\n", rundir);
+    /* recursively create all parent paths */
+    while (sl) {
+        *sl = '\0';
+        print_dbg("rundir: try make parent %s\n", rundir);
+        if (stat(rundir, &dstat) || !S_ISDIR(dstat.st_mode)) {
+            print_dbg("rundir: make parent %s\n", rundir);
+            if (mkdir(rundir, 0755)) {
+                perror("rundir: mkdir failed for path");
+                return false;
+            }
+        }
+        *sl = '/';
+        sl = strchr(sl + 1, '/');
+    }
+    /* create rundir with correct permissions */
+    if (mkdir(rundir, 0700)) {
+        perror("rundir: mkdir failed for rundir");
+        return false;
+    }
+    if (chown(rundir, uid, gid) < 0) {
+        perror("rundir: chown failed for rundir");
+        rmdir(rundir);
+        return false;
+    }
+    return true;
+}
+
+static bool rundir_clear_contents(int dfd) {
+    DIR *d = fdopendir(dfd);
+    if (!d) {
+        perror("rundir: fdopendir failed");
+        close(dfd);
+        return false;
+    }
+
+    unsigned char buf[offsetof(struct dirent, d_name) + NAME_MAX + 1];
+    unsigned char *bufp = buf;
+
+    struct dirent *dentb = nullptr, *dent = nullptr;
+    std::memcpy(&dentb, &bufp, sizeof(dent));
+
+    for (;;) {
+        if (readdir_r(d, dentb, &dent) < 0) {
+            perror("rundir: readdir_r failed");
+            closedir(d);
+            return false;
+        }
+        if (!dent) {
+            break;
+        }
+        if (
+            !std::strcmp(dent->d_name, ".") ||
+            !std::strcmp(dent->d_name, "..")
+        ) {
+            continue;
+        }
+
+        print_dbg("rundir: clear %s at %d\n", dent->d_name, dfd);
+        int efd = openat(dfd, dent->d_name, O_RDONLY);
+        if (efd < 0) {
+            perror("rundir: openat failed");
+            closedir(d);
+            return false;
+        }
+
+        struct stat st;
+        if (fstat(efd, &st) < 0) {
+            perror("rundir: fstat failed");
+            closedir(d);
+            return false;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            if (!rundir_clear_contents(efd)) {
+                closedir(d);
+                return false;
+            }
+        } else {
+            close(efd);
+        }
+
+        if (unlinkat(
+            dfd, dent->d_name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0
+        ) < 0) {
+            perror("rundir: unlinkat failed");
+            closedir(d);
+            return false;
+        }
+    }
+
+    closedir(d);
+    return true;
+}
+
+static void rundir_clear(char *rundir) {
+    struct stat dstat;
+    print_dbg("rundir: clear directory %s\n", rundir);
+    int dfd = open(rundir, O_RDONLY);
+    /* non-existent */
+    if (fstat(dfd, &dstat)) {
+        return;
+    }
+    /* not a directory */
+    if (!S_ISDIR(dstat.st_mode)) {
+        print_dbg("rundir: %s is not a directory\n", rundir);
+        return;
+    }
+    if (rundir_clear_contents(dfd)) {
+        /* was empty */
+        rmdir(rundir);
+    } else {
+        print_dbg("rundir: failed to clear contents of %s\n", rundir);
+    }
+}
 
 static void dinit_clean(session &sess) {
     char buf[sizeof(USER_FIFO) + UID_DIGITS];
@@ -203,7 +333,7 @@ static bool dinit_start(session &sess) {
     char ufifo[sizeof(USER_FIFO) + UID_DIGITS];
     std::snprintf(ufifo, sizeof(ufifo), USER_FIFO, sess.uid);
     /* user services dir */
-    char udir[HDIRLEN_MAX + 32];
+    char udir[DIRLEN_MAX + 32];
     std::snprintf(udir, sizeof(udir), "%s/.config/dinit.d", sess.homedir);
     /* set up service file */
     {
@@ -294,19 +424,21 @@ static bool dinit_start(session &sess) {
             }
         }
         /* make up an environment */
-        char uenv[HDIRLEN_MAX + 5];
-        char rundir[sizeof("XDG_RUNTIME_DIR=/run/user/") + UID_DIGITS + 1];
+        char uenv[DIRLEN_MAX + 5];
+        char rundir[DIRLEN_MAX + sizeof("XDG_RUNTIME_DIR=")];
         char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
         std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
         std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
         std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
-        std::snprintf(
-            rundir, sizeof(rundir), "XDG_RUNTIME_DIR=/run/user/%u", sess.uid
-        );
+        if (sess.rundir) {
+            std::snprintf(
+                rundir, sizeof(rundir), "XDG_RUNTIME_DIR=%s", sess.rundir
+            );
+        }
         char const *envp[] = {
-            uenv, euid, egid, rundir,
+            uenv, euid, egid,
             "PATH=/usr/local/bin:/usr/bin:/bin",
-            nullptr
+            sess.rundir ? rundir : nullptr, nullptr
         };
         /* 6 args reserved + whatever service dirs + terminator */
         char const *argp[6 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
@@ -343,10 +475,17 @@ static bool dinit_start(session &sess) {
  * this way the daemon supervises its session manager instances,
  * those that have a matching PID record in some existing session
  * will get restarted automatically
+ *
+ * also ensures that stopped sessions have their managed rundirs cleared
  */
 static bool dinit_restart(pid_t pid) {
     print_dbg("dinit: check for restarts\n");
     for (auto &sess: sessions) {
+        /* clear rundirs that are done */
+        if (sess.manage_rdir && (sess.dinit_pid < 0)) {
+            rundir_clear(sess.rundir);
+            sess.manage_rdir = false;
+        }
         if (sess.dinit_pid != pid) {
             continue;
         }
@@ -394,9 +533,12 @@ static bool handle_read(int fd) {
         perror("msg: recv failed");
         return false;
     }
-    print_dbg("msg: read %u (%d)\n", msg, fd);
-    switch (msg) {
-        case MSG_WELCOME: {
+    print_dbg(
+        "msg: read %u (%u, %d)\n", msg & MSG_TYPE_MASK,
+        msg >> MSG_TYPE_BITS, fd
+    );
+    switch (msg & MSG_TYPE_MASK) {
+        case MSG_START: {
             /* new login, register it */
             auto &pc = pending_conns.emplace_back();
             pc.conn = fd;
@@ -425,8 +567,35 @@ static bool handle_read(int fd) {
             }
             break;
         }
-        default: {
-            /* can be uid, gid, homedir size, or homedir data */
+        case MSG_REQ_RLEN: {
+            auto *sess = get_session(fd);
+            /* send rundir length */
+            if (!sess->rundir) {
+                /* send zero length */
+                return msg_send(fd, MSG_DATA);
+            }
+            return msg_send(fd, MSG_ENCODE(std::strlen(sess->rundir)));
+        }
+        case MSG_REQ_RDATA: {
+            auto *sess = get_session(fd);
+            msg >>= MSG_TYPE_BITS;
+            if (msg == 0) {
+                return msg_send(fd, MSG_ERR);
+            }
+            unsigned int v = 0;
+            auto rlen = sess->rundir ? std::strlen(sess->rundir) : 0;
+            if (msg > rlen) {
+                return msg_send(fd, MSG_ERR);
+            }
+            auto *rstr = sess->rundir;
+            std::memcpy(&v, rstr + rlen - msg, MSG_SBYTES(msg));
+            return msg_send(fd, MSG_ENCODE(v));
+        }
+        case MSG_DATA: {
+            msg >>= MSG_TYPE_BITS;
+            /* can be uid, gid, homedir size, homedir data,
+             * rundir size or rundir data
+             */
             for (
                 auto it = pending_conns.begin();
                 it != pending_conns.end(); ++it
@@ -449,13 +618,13 @@ static bool handle_read(int fd) {
                         return msg_send(fd, MSG_OK);
                     }
                     /* first message after gid */
-                    if (it->pending_hdir) {
+                    if (it->pending_hdir && !it->dirleft) {
                         print_dbg(
                             "msg: getting homedir for %u (length: %u)\n",
                             it->uid, msg
                         );
                         /* no length or too long; reject */
-                        if (!msg || (msg > HDIRLEN_MAX)) {
+                        if (!msg || (msg > DIRLEN_MAX)) {
                             pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
                         }
@@ -470,35 +639,36 @@ static bool handle_read(int fd) {
                             pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
                         }
-                        it->hdirleft = msg;
+                        it->dirleft = msg;
+                        return msg_send(fd, MSG_OK);
+                    }
+                    if (it->pending_hdir && it->dirleft) {
+                        auto pkt = MSG_SBYTES(it->dirleft);
+                        std::memcpy(&it->homedir[it->dirgot], &msg, pkt);
+                        it->dirgot += pkt;
+                        it->dirleft -= pkt;
+                        /* not done receiving homedir yet */
+                        if (it->dirleft) {
+                            return msg_send(fd, MSG_OK);
+                        }
                         it->pending_hdir = 0;
-                        return msg_send(fd, MSG_OK);
-                    }
-                    /* any of the homedir pieces */
-                    if (it->hdirleft) {
-                        auto pkt = std::min(
-                            static_cast<unsigned int >(sizeof(msg)),
-                            it->hdirleft
-                        );
-                        std::memcpy(&it->homedir[it->hdirgot], &msg, pkt);
-                        it->hdirgot += pkt;
-                        it->hdirleft -= pkt;
-                    }
-                    /* not done receiving homedir yet */
-                    if (it->hdirleft) {
-                        return msg_send(fd, MSG_OK);
-                    }
-                    /* we have received all, sanitize the homedir */
-                    {
-                        it->homedir[it->hdirgot] = '\0';
+                        /* done receiving, sanitize */
+                        it->homedir[it->dirgot] = '\0';
                         auto hlen = std::strlen(it->homedir);
                         if (!hlen) {
+                            pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
                         }
                         while (it->homedir[hlen - 1] == '/') {
                             it->homedir[--hlen] = '\0';
                         }
                         if (!hlen) {
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                        /* must be absolute */
+                        if (it->homedir[0] != '/') {
+                            pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
                         }
                         struct stat s;
@@ -507,11 +677,103 @@ static bool handle_read(int fd) {
                          * unsanitized contexts without escaping
                          */
                         if (stat(it->homedir, &s) || !S_ISDIR(s.st_mode)) {
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                        return msg_send(fd, MSG_OK);
+                    }
+                    /* any of the homedir pieces */
+                    if (it->pending_rdir) {
+                        /* rundir is handled similarly to homedir */
+                        char buf[sizeof(RUNDIR_PATH) + 32];
+                        print_dbg(
+                            "msg: getting rundir for %u (length: %u)\n",
+                            it->uid, msg
+                        );
+                        /* no length; that means we should make it up */
+                        if (!msg) {
+                            print_dbg("msg: received zero length rundir\n");
+                            std::snprintf(
+                                buf, sizeof(buf), RUNDIR_PATH, it->uid
+                            );
+                            it->rundir = strdup(buf);
+                            if (!it->rundir) {
+                                print_dbg(
+                                    "msg: failed to allocate rundir for %u\n",
+                                    it->uid
+                                );
+                                pending_conns.erase(it);
+                                return msg_send(fd, MSG_ERR);
+                            }
+                            print_dbg(
+                                "msg: made up rundir '%s' for %u\n",
+                                it->rundir, it->uid
+                            );
+                            it->dirgot = std::strlen(it->rundir);
+                            it->dirleft = 0;
+                            it->pending_rdir = 0;
+                            it->managed_rdir = 1;
+                            goto session_ack;
+                        }
+                        /* length too long; we should ignore rundir */
+                        if (msg > DIRLEN_MAX) {
+                            print_dbg("msg: skipping rundir\n");
+                            it->rundir = nullptr;
+                            it->dirgot = 0;
+                            it->dirleft = 0;
+                            it->pending_rdir = 0;
+                            goto session_ack;
+                        }
+                        /* else allocate and receive chunks */
+                        it->rundir = static_cast<char *>(
+                            std::malloc(msg + 1)
+                        );
+                        if (!it->rundir) {
+                            print_dbg(
+                                "msg: failed to alloc %u bytes for %u\n",
+                                msg, it->uid
+                            );
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                        it->dirgot = 0;
+                        it->dirleft = msg;
+                        it->pending_rdir = 0;
+                        return msg_send(fd, MSG_OK);
+                    }
+                    /* any of the rundir pieces */
+                    if (it->dirleft) {
+                        auto pkt = MSG_SBYTES(it->dirleft);
+                        std::memcpy(&it->rundir[it->dirgot], &msg, pkt);
+                        it->dirgot += pkt;
+                        it->dirleft -= pkt;
+                    }
+                    /* not done receiving rundir yet */
+                    if (it->dirleft) {
+                        return msg_send(fd, MSG_OK);
+                    }
+                    /* we have received all, sanitize the rundir */
+                    if (it->rundir) {
+                        it->rundir[it->dirgot] = '\0';
+                        auto rlen = std::strlen(it->rundir);
+                        if (!rlen) {
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                        while (it->rundir[rlen - 1] == '/') {
+                            it->rundir[--rlen] = '\0';
+                        }
+                        if (!rlen || (it->rundir[0] != '/')) {
+                            pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
                         }
                     }
+session_ack:
                     /* acknowledge the session */
-                    print_dbg("msg: welcome %u (%s)\n", it->uid, it->homedir);
+                    print_dbg(
+                        "msg: welcome %u (%s, %s)\n", it->uid, it->homedir,
+                        it->rundir ? it->rundir : "no rundir"
+                    );
                     session *sess = nullptr;
                     for (auto &sessr: sessions) {
                         if (sessr.uid == it->uid) {
@@ -531,13 +793,24 @@ static bool handle_read(int fd) {
                             return msg_send(fd, MSG_ERR);
                         }
                     }
+                    if (it->managed_rdir) {
+                        print_dbg("msg: setup rundir for %u\n", it->uid);
+                        if (!rundir_make(it->rundir, it->uid, it->gid)) {
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                    }
                     print_dbg("msg: setup session %u\n", it->uid);
                     sess->conns.push_back(fd);
                     sess->uid = it->uid;
                     sess->gid = it->gid;
                     std::free(sess->homedir);
+                    std::free(sess->rundir);
                     sess->homedir = it->homedir;
+                    sess->rundir = it->rundir;
+                    sess->manage_rdir = it->managed_rdir;
                     it->homedir = nullptr;
+                    it->rundir = nullptr;
                     pending_conns.erase(it);
                     /* reply */
                     return msg_send(fd, MSG_OK);
@@ -545,6 +818,8 @@ static bool handle_read(int fd) {
             }
             break;
         }
+        default:
+            break;
     }
     /* unexpected message, terminate the connection */
     return false;
@@ -595,7 +870,7 @@ static bool sock_new(char const *path, int &sock) {
     std::memset(&un, 0, sizeof(un));
     un.sun_family = AF_UNIX;
 
-    auto plen = strlen(path);
+    auto plen = std::strlen(path);
     if (plen >= sizeof(un.sun_path)) {
         std::fprintf(stderr, "path name %s too long", path);
         close(sock);

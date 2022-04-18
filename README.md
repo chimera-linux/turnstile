@@ -55,6 +55,21 @@ The login proceeds once the `dinit` instance has signaled readiness (which
 is once it has started its autostart services). It does so via an internal
 notification mechanism.
 
+### XDG_RUNTIME_DIR handling
+
+Usually, `XDG_RUNTIME_DIR` is managed by another daemon, typically `elogind`
+for Chimera. However, some people may not be running `elogind` or a similar
+solution. The PAM module automatically detects this and makes the daemon
+manage the runtime directory for you.
+
+It takes care of both creation and cleanup automatically as sessions are
+logged in and as they go away.
+
+To prevent it from managing rundir, you simply have to have something else
+manage it before; that means specifying that earlier in the PAM config file.
+Or, if you want to force that off, you can pass the `norundir` extra PAM
+argument.
+
 ### Dbus handling
 
 The daemon also supports handling of D-Bus session bus. If the socket

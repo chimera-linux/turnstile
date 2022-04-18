@@ -23,6 +23,7 @@
 #include <sys/un.h>
 
 #include <security/pam_modules.h>
+#include <security/pam_misc.h>
 
 #include "protocol.hh"
 
@@ -36,10 +37,22 @@ static void free_sock(pam_handle_t *, void *data, int) {
     free(data);
 }
 
-static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
+static bool open_session(
+    pam_handle_t *pamh, unsigned int &uid, int argc, char const **argv,
+    unsigned int &orlen, char *orbuf, bool &set_rundir
+) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
     if (!sock) {
         return false;
+    }
+
+    bool do_rundir = true;
+
+    /* overrides */
+    for (int i = 0; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "norundir")) {
+            do_rundir = false;
+        }
     }
 
     /* blocking socket and a simple protocol */
@@ -63,8 +76,9 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
 
     char const *puser;
     char const *hdir;
+    char const *rdir;
     passwd *pwd;
-    int ret, hlen;
+    int ret, hlen, rlen;
 
     auto send_msg = [sock](unsigned int msg) {
         if (write(*sock, &msg, sizeof(msg)) < 0) {
@@ -91,12 +105,26 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
         goto err;
     }
     hlen = strlen(hdir);
-    if (hlen > HDIRLEN_MAX) {
+    if (hlen > DIRLEN_MAX) {
         goto err;
     }
     /* this is verified serverside too but bail out early if needed */
     if (struct stat s; stat(hdir, &s) || !S_ISDIR(s.st_mode)) {
         goto err;
+    }
+
+    /* the other runtime dir manager is expected to ensure that the
+     * rundir actually exists by this point (logind does ensure it)
+     */
+    rdir = pam_getenv(pamh, "XDG_RUNTIME_DIR");
+    if (!rdir) {
+        rdir = "";
+    }
+    rlen = strlen(rdir);
+    if (rlen > DIRLEN_MAX) {
+        goto err;
+    } else if (rlen == 0) {
+        set_rundir = do_rundir;
     }
 
     if (connect(
@@ -105,7 +133,7 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
         goto err;
     }
 
-    if (!send_msg(MSG_WELCOME)) {
+    if (!send_msg(MSG_START)) {
         goto err;
     }
     /* main message loop */
@@ -115,6 +143,23 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
         bool sent_uid = false;
         bool sent_gid = false;
         bool sent_hlen = false;
+        bool sent_rlen = false;
+        bool got_rlen = false;
+        char *rbuf = orbuf;
+
+        auto send_strpkt = [&send_msg](char const *&sdir, int &slen) {
+            unsigned int pkt = 0;
+            auto psize = MSG_SBYTES(slen);
+            std::memcpy(&pkt, sdir, psize);
+            pkt <<= MSG_TYPE_BITS;
+            pkt |= MSG_DATA;
+            if (!send_msg(pkt)) {
+                return false;
+            }
+            sdir += psize;
+            slen -= psize;
+            return true;
+        };
 
         for (;;) {
             ret = read(*sock, &msg, sizeof(msg));
@@ -129,7 +174,7 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                     }
                     /* send uid */
                     if (!sent_uid) {
-                        if (!send_msg(pwd->pw_uid)) {
+                        if (!send_msg(MSG_ENCODE(pwd->pw_uid))) {
                             goto err;
                         }
                         sent_uid = true;
@@ -137,7 +182,7 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                     }
                     /* send gid */
                     if (!sent_gid) {
-                        if (!send_msg(pwd->pw_gid)) {
+                        if (!send_msg(MSG_ENCODE(pwd->pw_gid))) {
                             goto err;
                         }
                         sent_gid = true;
@@ -145,7 +190,7 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                     }
                     /* send homedir len */
                     if (!sent_hlen) {
-                        if (!send_msg(hlen)) {
+                        if (!send_msg(MSG_ENCODE(hlen))) {
                             goto err;
                         }
                         sent_hlen = true;
@@ -153,14 +198,28 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                     }
                     /* send a piece of homedir */
                     if (hlen) {
-                        unsigned int pkt = 0;
-                        auto psize = std::min(std::size_t(hlen), sizeof(pkt));
-                        std::memcpy(&pkt, hdir, psize);
-                        if (!send_msg(pkt)) {
+                        if (!send_strpkt(hdir, hlen)) {
                             goto err;
                         }
-                        hdir += psize;
-                        hlen -= psize;
+                        break;
+                    }
+                    /* send rundir len */
+                    if (!sent_rlen) {
+                        auto srlen = rlen;
+                        if (!srlen && !do_rundir) {
+                            srlen = DIRLEN_MAX + 1;
+                        }
+                        if (!send_msg(MSG_ENCODE(srlen))) {
+                            goto err;
+                        }
+                        sent_rlen = true;
+                        break;
+                    }
+                    /* send a piece of rundir */
+                    if (rlen) {
+                        if (!send_strpkt(rdir, rlen)) {
+                            goto err;
+                        }
                         break;
                     }
                     /* send clientside OK */
@@ -170,13 +229,12 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                     }
                     break;
                 case MSG_OK:
-                    /* already fully started, just finish */
-                    if (msg == MSG_OK_DONE) {
-                        return true;
-                    }
-                    /* not yet fully started, block on another read */
-                    if (msg == MSG_OK_WAIT) {
-                        state = MSG_OK_WAIT;
+                    /* if started, get the rundir back; else block */
+                    if ((msg == MSG_OK_DONE) || (msg == MSG_OK_WAIT)) {
+                        state = msg;
+                        if ((msg == MSG_OK_DONE) && !send_msg(MSG_REQ_RLEN)) {
+                            goto err;
+                        }
                         continue;
                     }
                     /* bad message */
@@ -187,10 +245,53 @@ static bool open_session(pam_handle_t *pamh, unsigned int &uid) {
                      * fully ready
                      */
                     if (msg == MSG_OK_DONE) {
-                        return true;
+                        state = msg;
+                        if (!send_msg(MSG_REQ_RLEN)) {
+                            goto err;
+                        }
+                        continue;
                     }
                     /* bad message */
                     goto err;
+                case MSG_OK_DONE: {
+                    if ((msg & MSG_TYPE_MASK) != MSG_DATA) {
+                        goto err;
+                    }
+                    /* after MSG_OK_DONE, we should receive the runtime dir
+                     * length first; if zero, it means we are completely done
+                     */
+                    msg >>= MSG_TYPE_BITS;
+                    if (!got_rlen) {
+                        if (msg == 0) {
+                            orlen = 0;
+                            return true;
+                        } else if (msg > DIRLEN_MAX) {
+                            goto err;
+                        }
+                        got_rlen = true;
+                        rlen = int(msg);
+                        orlen = msg;
+                        if (!send_msg(MSG_ENCODE_AUX(rlen, MSG_REQ_RDATA))) {
+                            goto err;
+                        }
+                        continue;
+                    }
+                    /* we are receiving the string... */
+                    int pkts = MSG_SBYTES(rlen);
+                    std::memcpy(rbuf, &msg, pkts);
+                    rbuf += pkts;
+                    rlen -= pkts;
+                    if (rlen == 0) {
+                        /* we have received the whole thing, terminate */
+                        *rbuf = '\0';
+                        return true;
+                    }
+                    if (!send_msg(MSG_ENCODE_AUX(rlen, MSG_REQ_RDATA))) {
+                        goto err;
+                    }
+                    /* keep receiving pieces */
+                    continue;
+                }
                 default:
                     goto err;
             }
@@ -206,26 +307,38 @@ err:
 }
 
 extern "C" PAMAPI int pam_sm_open_session(
-    pam_handle_t *pamh, int, int, char const **
+    pam_handle_t *pamh, int, int argc, char const **argv
 ) {
-    unsigned int uid;
-    if (!open_session(pamh, uid)) {
+    unsigned int uid, rlen = 0;
+    bool set_rundir = false;
+    /* potential rundir we are managing */
+    char rdir[DIRLEN_MAX + 1];
+    if (!open_session(pamh, uid, argc, argv, rlen, rdir, set_rundir)) {
         return PAM_SESSION_ERR;
     }
-    /* try exporting a dbus session bus variable */
-    char buf[512];
-    std::snprintf(
-        buf, sizeof(buf),
-        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%u/bus", uid
-    );
+    if (rlen) {
+        char const dpfx[] = "DBUS_SESSION_BUS_ADDRESS=unix:path=";
+        char buf[sizeof(rdir) + sizeof(dpfx) + 4];
 
-    struct stat sbuf;
-    if (!stat(strchr(buf, '/'), &sbuf) && S_ISSOCK(sbuf.st_mode)) {
-        if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
+        /* try exporting a dbus session bus variable */
+        std::snprintf(buf, sizeof(buf), "%s%s/bus", dpfx, rdir);
+
+        struct stat sbuf;
+        if (!lstat(strchr(buf, '/'), &sbuf) && S_ISSOCK(sbuf.st_mode)) {
+            if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
+                return PAM_SESSION_ERR;
+            }
+        }
+
+        if (!set_rundir) {
+            return PAM_SUCCESS;
+        }
+
+        /* set rundir too if needed */
+        if (pam_misc_setenv(pamh, "XDG_RUNTIME_DIR", rdir, 1) != PAM_SUCCESS) {
             return PAM_SESSION_ERR;
         }
     }
-
     return PAM_SUCCESS;
 }
 
