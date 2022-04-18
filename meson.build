@@ -31,12 +31,6 @@ pam_mod = shared_module(
 )
 
 install_data(
-    'dinit-run-dbus',
-    install_dir: get_option('bindir'),
-    install_mode: 'rwxr-xr-x'
-)
-
-install_data(
     'dinit-userservd',
     install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
     install_mode: 'rw-r--r--'
