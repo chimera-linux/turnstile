@@ -46,6 +46,8 @@ static bool open_session(
         return false;
     }
 
+#if 0
+    /* FIXME: this is problematic with gdm somehow, figure out why */
     bool do_rundir = true;
 
     /* overrides */
@@ -54,6 +56,9 @@ static bool open_session(
             do_rundir = false;
         }
     }
+#else
+    bool do_rundir = false;
+#endif
 
     /* blocking socket and a simple protocol */
     *sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);

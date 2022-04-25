@@ -57,6 +57,8 @@ notification mechanism.
 
 ### XDG_RUNTIME_DIR handling
 
+**NOTE:** This is problematic for now, so it's disabled at the moment.
+
 Usually, `XDG_RUNTIME_DIR` is managed by another daemon, typically `elogind`
 for Chimera. However, some people may not be running `elogind` or a similar
 solution. The PAM module automatically detects this and makes the daemon
