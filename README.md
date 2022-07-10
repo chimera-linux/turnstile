@@ -55,27 +55,29 @@ The login proceeds once the `dinit` instance has signaled readiness (which
 is once it has started its autostart services). It does so via an internal
 notification mechanism.
 
-### XDG_RUNTIME_DIR handling
+### Configuration file
 
-**NOTE:** This is problematic for now, so it's disabled at the moment.
+By default, a configuration file `dinit-userservd.conf` is read from `/etc`.
+You can pass your own path on the command line as its first argument.
+
+See the supplied `dinit-userservd.conf` for possible options.
+
+### XDG_RUNTIME_DIR handling
 
 Usually, `XDG_RUNTIME_DIR` is managed by another daemon, typically `elogind`
 for Chimera. However, some people may not be running `elogind` or a similar
-solution. The PAM module automatically detects this and makes the daemon
-manage the runtime directory for you.
+solution. The daemon is capable of managing the runtime directory for you
+if you enable it.
 
-It takes care of both creation and cleanup automatically as sessions are
-logged in and as they go away.
+By default, `XDG_RUNTIME_DIR` is exported into the user service environment
+regardless of if managed or not.
 
-To prevent it from managing rundir, you simply have to have something else
-manage it before; that means specifying that earlier in the PAM config file.
-Or, if you want to force that off, you can pass the `norundir` extra PAM
-argument.
+Both options can be tweaked in the configuration file.
 
 ### Dbus handling
 
 The daemon also supports handling of D-Bus session bus. If the socket
-`/run/user/UID/bus` exists by the time readiness has been signaled, the
+`RUNDIR/bus` exists by the time readiness has been signaled, the
 variable `DBUS_SESSION_BUS_ADDRESS` will automatically be exported into
 the login environment.
 
@@ -84,7 +86,12 @@ having to spawn it on-demand.
 
 User services making use of the bus need to ensure that the variable is
 exported in their launch environment in some way, as the service manager
-runs outside of the user's login session.
+runs outside of the user's login session. This can be done for example
+with `dinitctl setenv`, which you can make a part of your session bus
+service startup process.
+
+D-Bus handling can be disabled in the configuration file. It is also
+not handled at all if the runtime directory path is not exported.
 
 ## TODO
 

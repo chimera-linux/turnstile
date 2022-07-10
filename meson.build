@@ -35,3 +35,9 @@ install_data(
     install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
     install_mode: 'rw-r--r--'
 )
+
+install_data(
+    'dinit-userservd.conf',
+    install_dir: get_option('sysconfdir'),
+    install_mode: 'rw-r--r--'
+)

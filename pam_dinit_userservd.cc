@@ -38,27 +38,13 @@ static void free_sock(pam_handle_t *, void *data, int) {
 }
 
 static bool open_session(
-    pam_handle_t *pamh, unsigned int &uid, int argc, char const **argv,
+    pam_handle_t *pamh, unsigned int &uid, int, char const **,
     unsigned int &orlen, char *orbuf, bool &set_rundir
 ) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
     if (!sock) {
         return false;
     }
-
-#if 0
-    /* FIXME: this is problematic with gdm somehow, figure out why */
-    bool do_rundir = true;
-
-    /* overrides */
-    for (int i = 0; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "norundir")) {
-            do_rundir = false;
-        }
-    }
-#else
-    bool do_rundir = false;
-#endif
 
     /* blocking socket and a simple protocol */
     *sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -81,7 +67,6 @@ static bool open_session(
 
     char const *puser;
     char const *hdir;
-    char const *rdir;
     passwd *pwd;
     int ret, hlen, rlen;
 
@@ -118,20 +103,6 @@ static bool open_session(
         goto err;
     }
 
-    /* the other runtime dir manager is expected to ensure that the
-     * rundir actually exists by this point (logind does ensure it)
-     */
-    rdir = pam_getenv(pamh, "XDG_RUNTIME_DIR");
-    if (!rdir) {
-        rdir = "";
-    }
-    rlen = strlen(rdir);
-    if (rlen > DIRLEN_MAX) {
-        goto err;
-    } else if (rlen == 0) {
-        set_rundir = do_rundir;
-    }
-
     if (connect(
         *sock, reinterpret_cast<sockaddr const *>(&saddr), sizeof(saddr)
     ) < 0) {
@@ -148,7 +119,6 @@ static bool open_session(
         bool sent_uid = false;
         bool sent_gid = false;
         bool sent_hlen = false;
-        bool sent_rlen = false;
         bool got_rlen = false;
         char *rbuf = orbuf;
 
@@ -208,25 +178,6 @@ static bool open_session(
                         }
                         break;
                     }
-                    /* send rundir len */
-                    if (!sent_rlen) {
-                        auto srlen = rlen;
-                        if (!srlen && !do_rundir) {
-                            srlen = DIRLEN_MAX + 1;
-                        }
-                        if (!send_msg(MSG_ENCODE(srlen))) {
-                            goto err;
-                        }
-                        sent_rlen = true;
-                        break;
-                    }
-                    /* send a piece of rundir */
-                    if (rlen) {
-                        if (!send_strpkt(rdir, rlen)) {
-                            goto err;
-                        }
-                        break;
-                    }
                     /* send clientside OK */
                     state = msg;
                     if (!send_msg(MSG_OK)) {
@@ -271,7 +222,11 @@ static bool open_session(
                             orlen = 0;
                             return true;
                         } else if (msg > DIRLEN_MAX) {
-                            goto err;
+                            set_rundir = true;
+                            msg -= DIRLEN_MAX;
+                            if (msg > DIRLEN_MAX) {
+                                goto err;
+                            }
                         }
                         got_rlen = true;
                         rlen = int(msg);
@@ -339,8 +294,10 @@ extern "C" PAMAPI int pam_sm_open_session(
             return PAM_SUCCESS;
         }
 
+        std::snprintf(buf, sizeof(buf), "XDG_RUNTIME_DIR=%s", rdir);
+
         /* set rundir too if needed */
-        if (pam_misc_setenv(pamh, "XDG_RUNTIME_DIR", rdir, 1) != PAM_SUCCESS) {
+        if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
             return PAM_SESSION_ERR;
         }
     }

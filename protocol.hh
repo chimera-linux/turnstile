@@ -49,12 +49,6 @@ static_assert(
  *   CLIENT: consumes MSG_OK, if there is any of homedir left unsent,
  *           it sends it; otherwise loop ends
  *   SERVER: adds to buffer, responds MSG_OK
- * CLIENT: consumes MSG_OK, sends MSG_DATA with rundir length attached;
- *         if no rundir is set clientside, sends 0 instead and the server
- *         will make its own; if rundir handling is intentionally skipped,
- *         DIRLEN_MAX+1 is sent instead and the server will disregard it
- * loop: same as above, but for rundir (nothing is sent for 0 length);
- *       at the end, server acknowledges the session and replies MSG_OK
  * CLIENT: sends MSG_OK to confirm everything is ready on its side
  * SERVER: if service manager for the user is already running, responds
  *         with MSG_OK_DONE; else initiates startup and responds with
@@ -62,7 +56,8 @@ static_assert(
  * CLIENT: if MSG_OK_WAIT was received, waits for a message
  * SERVER: once service manager starts, MSG_OK_DONE is sent
  * CLIENT: sends MSG_REQ_RLEN
- * SERVER: responds with MSG_DATA with rundir length (0 if not known)
+ * SERVER: responds with MSG_DATA with rundir length (0 if not known,
+           DIRLEN_MAX will be added to it if managed).
  * loop:
  *   CLIENT: sends MSG_REQ_RDATA with number of remaining bytes of rundir
  *           that are yet to be received
