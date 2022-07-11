@@ -13,7 +13,6 @@
 #define SOCK_PATH "/run/dinit-userservd"
 #define DAEMON_SOCK SOCK_PATH"/control.sock"
 #define USER_PATH SOCK_PATH"/%u"
-#define USER_FIFO USER_PATH"/dinit.fifo"
 #define USER_DIR USER_PATH"/dinit.XXXXXX"
 
 /* sanity check */
