@@ -25,6 +25,8 @@
 #include <algorithm>
 
 #include <syslog.h>
+#include <pwd.h>
+#include <grp.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -486,8 +488,17 @@ static bool dinit_start(session &sess) {
     auto pid = fork();
     if (pid == 0) {
         if (getuid() == 0) {
+            auto *pw = getpwuid(sess.uid);
+            if (!pw) {
+                perror("dinit: getpwuid failed");
+                exit(1);
+            }
             if (setgid(sess.gid) != 0) {
                 perror("dinit: failed to set gid");
+                exit(1);
+            }
+            if (initgroups(pw->pw_name, sess.gid) != 0) {
+                perror("dinit: failed to set supplementary groups");
                 exit(1);
             }
             if (setuid(sess.uid) != 0) {
