@@ -139,6 +139,13 @@ static std::vector<session_timer> timers;
         syslog(LOG_DEBUG, __VA_ARGS__); \
     }
 
+#define print_err(...) \
+    if (cdata.debug_stderr) { \
+        fprintf(stderr, __VA_ARGS__); \
+        fputc('\n', stderr); \
+    } \
+    syslog(LOG_ERR, __VA_ARGS__);
+
 static constexpr int const UID_DIGITS = \
     std::numeric_limits<unsigned int>::digits10;
 
@@ -241,7 +248,9 @@ static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
         if (stat(rundir, &dstat) || !S_ISDIR(dstat.st_mode)) {
             print_dbg("rundir: make parent %s", rundir);
             if (mkdir(rundir, 0755)) {
-                perror("rundir: mkdir failed for path");
+                print_err(
+                    "rundir: mkdir failed for path (%s)", strerror(errno)
+                );
                 return false;
             }
         }
@@ -250,11 +259,11 @@ static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
     }
     /* create rundir with correct permissions */
     if (mkdir(rundir, 0700)) {
-        perror("rundir: mkdir failed for rundir");
+        print_err("rundir: mkdir failed for rundir (%s)", strerror(errno));
         return false;
     }
     if (chown(rundir, uid, gid) < 0) {
-        perror("rundir: chown failed for rundir");
+        print_err("rundir: chown failed for rundir (%s)", strerror(errno));
         rmdir(rundir);
         return false;
     }
@@ -264,7 +273,7 @@ static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
 static bool rundir_clear_contents(int dfd) {
     DIR *d = fdopendir(dfd);
     if (!d) {
-        perror("rundir: fdopendir failed");
+        print_err("rundir: fdopendir failed (%s)", strerror(errno));
         close(dfd);
         return false;
     }
@@ -277,7 +286,7 @@ static bool rundir_clear_contents(int dfd) {
 
     for (;;) {
         if (readdir_r(d, dentb, &dent) < 0) {
-            perror("rundir: readdir_r failed");
+            print_err("rundir: readdir_r failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
@@ -294,14 +303,14 @@ static bool rundir_clear_contents(int dfd) {
         print_dbg("rundir: clear %s at %d", dent->d_name, dfd);
         int efd = openat(dfd, dent->d_name, O_RDONLY);
         if (efd < 0) {
-            perror("rundir: openat failed");
+            print_err("rundir: openat failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
 
         struct stat st;
         if (fstat(efd, &st) < 0) {
-            perror("rundir: fstat failed");
+            print_err("rundir: fstat failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
@@ -318,7 +327,7 @@ static bool rundir_clear_contents(int dfd) {
         if (unlinkat(
             dfd, dent->d_name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0
         ) < 0) {
-            perror("rundir: unlinkat failed");
+            print_err("rundir: unlinkat failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
@@ -353,7 +362,7 @@ static bool dinit_boot(session &sess, char const *sock) {
     print_dbg("dinit: boot wait");
     auto pid = fork();
     if (pid < 0) {
-        perror("dinit: fork failed");
+        print_err("dinit: fork failed (%s)", strerror(errno));
         /* unrecoverable */
         return false;
     }
@@ -365,11 +374,11 @@ static bool dinit_boot(session &sess, char const *sock) {
     /* child process */
     if (getuid() == 0) {
         if (setgid(sess.gid) != 0) {
-            perror("dinit: failed to set gid");
+            print_err("dinit: failed to set gid (%s)", strerror(errno));
             exit(1);
         }
         if (setuid(sess.uid) != 0) {
-            perror("dinit: failed to set uid");
+            print_err("dinit: failed to set uid (%s)", strerror(errno));
             exit(1);
         }
     }
@@ -403,11 +412,11 @@ static bool dinit_start(session &sess) {
         struct stat pstat;
         if (stat(rdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
             if (mkdir(rdir, 0700)) {
-                perror("dinit: mkdir($UID) failed");
+                print_err("dinit: mkdir($UID) failed (%s)", strerror(errno));
                 return false;
             }
             if (chown(rdir, sess.uid, sess.gid) < 0) {
-                perror("dinit: chown($UID) failed");
+                print_err("dinit: chown($UID) failed (%s)", strerror(errno));
                 rmdir(rdir);
                 return false;
             }
@@ -415,14 +424,14 @@ static bool dinit_start(session &sess) {
     }
     /* create temporary services dir */
     if (!mkdtemp(tdir)) {
-        perror("dinit: mkdtemp failed");
+        print_err("dinit: mkdtemp failed (%s)", strerror(errno));
         return false;
     }
     print_dbg("dinit: created service directory (%s)", tdir);
     /* store the characters identifying the tempdir */
     std::memcpy(sess.dinit_tmp, tdir + std::strlen(tdir) - 6, 6);
     if (chown(tdir, sess.uid, sess.gid) < 0) {
-        perror("dinit: chown failed");
+        print_err("dinit: chown failed (%s)", strerror(errno));
         rmdir(tdir);
         return false;
     }
@@ -435,7 +444,7 @@ static bool dinit_start(session &sess) {
         std::snprintf(uboot, sizeof(uboot), "%s/boot", tdir);
         auto *f = std::fopen(uboot, "w");
         if (!f) {
-            perror("dinit: fopen failed");
+            print_err("dinit: fopen failed (%s)", strerror(errno));
             return false;
         }
         /* write boot service */
@@ -445,7 +454,7 @@ static bool dinit_start(session &sess) {
         std::fclose(f);
         /* set perms otherwise we would infinite loop */
         if (chown(uboot, sess.uid, sess.gid) < 0) {
-            perror("dinit: chown failed");
+            print_err("dinit: chown failed (%s)", strerror(errno));
             unlink(uboot);
             return false;
         }
@@ -453,7 +462,7 @@ static bool dinit_start(session &sess) {
     /* lazily set up user pipe */
     if (sess.userpipe[0] == -1) {
         if (pipe2(sess.userpipe, O_NONBLOCK) < 0) {
-            perror("dinit: pipe failed");
+            print_err("dinit: pipe failed (%s)", strerror(errno));
             return false;
         }
         auto &pfd = pipes.emplace_back();
@@ -469,7 +478,7 @@ static bool dinit_start(session &sess) {
         tm.sev.sigev_signo = SIGALRM;
         /* create timer, drop if it fails */
         if (timer_create(CLOCK_MONOTONIC, &tm.sev, &tm.timer) < 0) {
-            perror("dinit: timer_create failed");
+            print_err("dinit: timer_create failed (%s)", strerror(errno));
             timers.pop_back();
             return false;
         }
@@ -477,7 +486,7 @@ static bool dinit_start(session &sess) {
         itimerspec tval{};
         tval.it_value.tv_sec = dinit_timeout;
         if (timer_settime(tm.timer, 0, &tval, nullptr) < 0) {
-            perror("dinit: timer_settime failed");
+            print_err("dinit: timer_settime failed (%s)", strerror(errno));
             timer_delete(tm.timer);
             timers.pop_back();
             return false;
@@ -490,19 +499,22 @@ static bool dinit_start(session &sess) {
         if (getuid() == 0) {
             auto *pw = getpwuid(sess.uid);
             if (!pw) {
-                perror("dinit: getpwuid failed");
+                print_err("dinit: getpwuid failed (%s)", strerror(errno));
                 exit(1);
             }
             if (setgid(sess.gid) != 0) {
-                perror("dinit: failed to set gid");
+                print_err("dinit: failed to set gid (%s)", strerror(errno));
                 exit(1);
             }
             if (initgroups(pw->pw_name, sess.gid) != 0) {
-                perror("dinit: failed to set supplementary groups");
+                print_err(
+                    "dinit: failed to set supplementary groups (%s)",
+                    strerror(errno)
+                );
                 exit(1);
             }
             if (setuid(sess.uid) != 0) {
-                perror("dinit: failed to set uid");
+                print_err("dinit: failed to set uid (%s)", strerror(errno));
                 exit(1);
             }
         }
@@ -551,7 +563,7 @@ static bool dinit_start(session &sess) {
         execvpe("dinit", const_cast<char **>(argp), const_cast<char **>(envp));
         exit(1);
     } else if (pid < 0) {
-        perror("dinit: fork failed");
+        print_err("dinit: fork failed (%s)", strerror(errno));
         return false;
     }
     sess.dinit_pid = pid;
@@ -585,9 +597,7 @@ static bool dinit_reaper(pid_t pid) {
                  * this indicates that we'd probably just loop forever,
                  * so bail out
                  */
-                 std::fprintf(
-                     stderr, "dinit: died without notifying readiness\n"
-                 );
+                 print_err("dinit: died without notifying readiness");
                  return false;
             }
             return dinit_start(sess);
@@ -597,7 +607,7 @@ static bool dinit_reaper(pid_t pid) {
             unsigned int msg = MSG_OK_DONE;
             for (auto c: sess.conns) {
                 if (send(c, &msg, sizeof(msg), 0) < 0) {
-                    perror("conn: send failed");
+                    print_err("conn: send failed (%s)", strerror(errno));
                 }
             }
             /* disarm an associated timer */
@@ -650,7 +660,7 @@ static session *get_session(int fd) {
 
 static bool msg_send(int fd, unsigned int msg) {
     if (send(fd, &msg, sizeof(msg), 0) < 0) {
-        perror("msg: send failed");
+        print_err("msg: send failed (%s)", strerror(errno));
         return false;
     }
     return (msg != MSG_ERR);
@@ -663,7 +673,7 @@ static bool handle_read(int fd) {
         if (errno == EAGAIN) {
             return true;
         }
-        perror("msg: recv failed");
+        print_err("msg: recv failed (%s)", strerror(errno));
         return false;
     }
     print_dbg(
@@ -924,7 +934,7 @@ static void conn_term(int conn) {
 static bool sock_new(char const *path, int &sock) {
     sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock < 0) {
-        perror("socket failed");
+        print_err("socket failed (%s)", strerror(errno));
         return false;
     }
 
@@ -936,7 +946,7 @@ static bool sock_new(char const *path, int &sock) {
 
     auto plen = std::strlen(path);
     if (plen >= sizeof(un.sun_path)) {
-        std::fprintf(stderr, "path name %s too long", path);
+        print_err("socket: path name %s too long", path);
         close(sock);
         return false;
     }
@@ -946,20 +956,20 @@ static bool sock_new(char const *path, int &sock) {
     unlink(path);
 
     if (bind(sock, reinterpret_cast<sockaddr const *>(&un), sizeof(un)) < 0) {
-        perror("bind failed");
+        print_err("bind failed (%s)", strerror(errno));
         close(sock);
         return false;
     }
     print_dbg("socket: bound %d for %s", sock, path);
 
     if (chmod(path, 0600) < 0) {
-        perror("chmod failed");
+        print_err("chmod failed (%s)", strerror(errno));
         goto fail;
     }
     print_dbg("socket: permissions set");
 
     if (listen(sock, SOMAXCONN) < 0) {
-        perror("listen failed");
+        print_err("listen failed (%s)", strerror(errno));
         goto fail;
     }
     print_dbg("socket: listen");
@@ -1075,7 +1085,7 @@ int main(int argc, char **argv) {
     fds.reserve(64);
     pipes.reserve(8);
 
-    openlog("dinit-userservd", LOG_CONS, LOG_DAEMON);
+    openlog("dinit-userservd", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
     syslog(LOG_INFO, "Initializing dinit-userservd...");
 
@@ -1092,7 +1102,7 @@ int main(int argc, char **argv) {
         if (stat(SOCK_PATH, &pstat) || !S_ISDIR(pstat.st_mode)) {
             /* create control directory */
             if (mkdir(SOCK_PATH, 0755)) {
-                perror("mkdir failed");
+                print_err("mkdir failed (%s)", strerror(errno));
                 return 1;
             }
         }
@@ -1104,7 +1114,7 @@ int main(int argc, char **argv) {
     /* signal pipe */
     {
         if (pipe(sigpipe) < 0) {
-            perror("pipe failed");
+            print_err("pipe failed (%s)", strerror(errno));
             return 1;
         }
         auto &pfd = fds.emplace_back();
@@ -1137,7 +1147,7 @@ int main(int argc, char **argv) {
             if (errno == EINTR) {
                 goto do_compact;
             }
-            perror("poll failed");
+            print_err("poll failed (%s)", strerror(errno));
             return 1;
         } else if (pret == 0) {
             goto do_compact;
@@ -1146,7 +1156,7 @@ int main(int argc, char **argv) {
         if (fds[0].revents == POLLIN) {
             int sign;
             if (read(fds[0].fd, &sign, sizeof(int)) != sizeof(int)) {
-                perror("signal read failed");
+                print_err("signal read failed (%s)", strerror(errno));
                 goto do_compact;
             }
             if (sign == SIGALRM) {
@@ -1181,8 +1191,8 @@ int main(int argc, char **argv) {
             while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
                 /* deal with each pid here */
                 if (!dinit_reaper(wpid)) {
-                    std::fprintf(
-                        stderr, "failed to restart dinit (%u)\n",
+                    print_err(
+                        "userservd: failed to restart dinit (%u)\n",
                         static_cast<unsigned int>(wpid)
                     );
                     /* this is an unrecoverable condition */
@@ -1200,7 +1210,7 @@ signal_done:
                 if (afd < 0) {
                     if (errno != EAGAIN) {
                         /* should not happen? disregard the connection */
-                        perror("accept4 failed");
+                        print_err("accept4 failed (%s)", strerror(errno));
                     }
                     break;
                 }
@@ -1250,7 +1260,7 @@ signal_done:
                 fds[i].revents = 0;
                 /* but error early if needed */
                 if (!buf.sun_path[0]) {
-                    perror("read failed");
+                    print_err("read failed (%s)", strerror(errno));
                     continue;
                 }
                 /* wait for the boot service to come up */
