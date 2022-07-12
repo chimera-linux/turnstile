@@ -1,7 +1,5 @@
 # dinit-userservd service
 
-type            = process
-command         = /usr/bin/dinit-userservd
-depends-on      = elogind
-smooth-recovery = true
-logfile         = /var/log/dinit-userservd.log
+type    = process
+command = /usr/bin/dinit-userservd
+logfile = /var/log/dinit-userservd.log
