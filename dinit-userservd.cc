@@ -77,16 +77,22 @@ static constexpr time_t const dinit_timeout = 60;
 struct session {
     std::vector<int> conns{};
     char *homedir = nullptr;
+    char *sockptr = nullptr;
     char dinit_tmp[6];
     pid_t dinit_pid = -1;
     pid_t start_pid = -1;
     pid_t term_pid = -1;
     unsigned int uid = 0;
     unsigned int gid = 0;
-    int userpipe[2] = {-1, -1};
+    int userpipe = -1;
     bool dinit_wait = true;
     bool manage_rdir = false;
     char rundir[DIRLEN_MAX];
+    char csock[sizeof(sockaddr_un{}.sun_path)];
+
+    session() {
+        sockptr = csock;
+    }
 
     ~session() {
         std::free(homedir);
@@ -358,7 +364,7 @@ static void rundir_clear(char *rundir) {
     }
 }
 
-static bool dinit_boot(session &sess, char const *sock) {
+static bool dinit_boot(session &sess) {
     print_dbg("dinit: boot wait");
     auto pid = fork();
     if (pid < 0) {
@@ -384,7 +390,7 @@ static bool dinit_boot(session &sess, char const *sock) {
     }
     execlp(
         "dinitctl", "dinitctl",
-        "--socket-path", sock, "start", "boot", nullptr
+        "--socket-path", sess.csock, "start", "boot", nullptr
     );
     exit(1);
     return true;
@@ -399,6 +405,7 @@ static constexpr char const *servpaths[] = {
 
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
+    int dpipe[2];
     /* user dir */
     char rdir[sizeof(USER_PATH) + UID_DIGITS];
     std::snprintf(rdir, sizeof(rdir), USER_PATH, sess.uid);
@@ -459,16 +466,14 @@ static bool dinit_start(session &sess) {
             return false;
         }
     }
-    /* lazily set up user pipe */
-    if (sess.userpipe[0] == -1) {
-        if (pipe2(sess.userpipe, O_NONBLOCK) < 0) {
-            print_err("dinit: pipe failed (%s)", strerror(errno));
-            return false;
-        }
-        auto &pfd = pipes.emplace_back();
-        pfd.fd = sess.userpipe[0];
-        pfd.events = POLLIN | POLLHUP;
+    /* here we'll receive the dinit socket path once ready to take commands */
+    if (pipe2(dpipe, O_NONBLOCK) < 0) {
+        print_err("dinit: pipe failed (%s)", strerror(errno));
+        return false;
     }
+    auto &pfd = pipes.emplace_back();
+    pfd.fd = dpipe[0];
+    pfd.events = POLLIN | POLLHUP;
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
     {
@@ -526,7 +531,7 @@ static bool dinit_start(session &sess) {
         std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
         std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
         std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
-        std::snprintf(pnum, sizeof(pnum), "%d", sess.userpipe[1]);
+        std::snprintf(pnum, sizeof(pnum), "%d", dpipe[1]);
         if (sess.rundir[0]) {
             std::snprintf(
                 rundir, sizeof(rundir), "XDG_RUNTIME_DIR=%s", sess.rundir
@@ -566,7 +571,10 @@ static bool dinit_start(session &sess) {
         print_err("dinit: fork failed (%s)", strerror(errno));
         return false;
     }
+    /* close the write end on our side */
+    close(dpipe[1]);
     sess.dinit_pid = pid;
+    sess.userpipe = pfd.fd;
     return true;
 }
 
@@ -1228,7 +1236,7 @@ signal_done:
             /* find if this is a pipe */
             session *sess = nullptr;
             for (auto &sessr: sessions) {
-                if (fds[i].fd == sessr.userpipe[0]) {
+                if (fds[i].fd == sessr.userpipe) {
                     sess = &sessr;
                     break;
                 }
@@ -1237,13 +1245,10 @@ signal_done:
                 break;
             }
             if (fds[i].revents & POLLIN) {
-                /* input on pipe or connection */
-                struct sockaddr_un buf{};
-                char *bufp = buf.sun_path;
-                char *bufe = &buf.sun_path[sizeof(buf.sun_path) - 1];
+                auto *endp = &sess->csock[sizeof(sess->csock) - 1];
                 /* read the socket path */
-                while (read(fds[i].fd, bufp++, 1) == 1) {
-                    if (bufp == bufe) {
+                while (read(fds[i].fd, sess->sockptr++, 1) == 1) {
+                    if (sess->sockptr == endp) {
                         /* just in case, break off reading past the limit */
                         char b;
                         /* eat whatever else is in the pipe */
@@ -1251,23 +1256,26 @@ signal_done:
                         break;
                     }
                 }
+            }
+            if (fds[i].revents & POLLHUP) {
                 /* kill the pipe, we don't need it anymore */
-                close(sess->userpipe[0]);
-                close(sess->userpipe[1]);
-                sess->userpipe[0] = -1;
-                sess->userpipe[1] = -1;
+                close(sess->userpipe);
+                sess->userpipe = -1;
                 fds[i].fd = -1;
                 fds[i].revents = 0;
                 /* but error early if needed */
-                if (!buf.sun_path[0]) {
+                if (!sess->csock[0]) {
                     print_err("read failed (%s)", strerror(errno));
                     continue;
                 }
                 /* wait for the boot service to come up */
-                if (!dinit_boot(*sess, buf.sun_path)) {
+                if (!dinit_boot(*sess)) {
                     /* this is an unrecoverable condition */
                     return 1;
                 }
+                /* reset the buffer for next time */
+                sess->sockptr = sess->csock;
+                std::memset(sess->csock, 0, sizeof(sess->csock));
                 continue;
             }
         }
