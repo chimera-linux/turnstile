@@ -1247,12 +1247,15 @@ signal_done:
             if (fds[i].revents & POLLIN) {
                 auto *endp = &sess->csock[sizeof(sess->csock) - 1];
                 /* read the socket path */
-                while (read(fds[i].fd, sess->sockptr++, 1) == 1) {
+                for (;;) {
                     if (sess->sockptr == endp) {
                         /* just in case, break off reading past the limit */
                         char b;
                         /* eat whatever else is in the pipe */
                         while (read(fds[i].fd, &b, 1) == 1) {}
+                        break;
+                    }
+                    if (read(fds[i].fd, sess->sockptr++, 1) != 1) {
                         break;
                     }
                 }
