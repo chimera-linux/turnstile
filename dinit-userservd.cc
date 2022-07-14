@@ -403,6 +403,73 @@ static constexpr char const *servpaths[] = {
     "/usr/lib/dinit.d/user",
 };
 
+static void dinit_child(
+    session &sess, int pipew, char const *tdir, char const *udir
+) {
+    if (getuid() == 0) {
+        auto *pw = getpwuid(sess.uid);
+        if (!pw) {
+            perror("dinit: getpwuid failed");
+            exit(1);
+        }
+        if (setgid(sess.gid) != 0) {
+            perror("dinit: failed to set gid");
+            exit(1);
+        }
+        if (initgroups(pw->pw_name, sess.gid) != 0) {
+            perror("dinit: failed to set supplementary groups");
+            exit(1);
+        }
+        if (setuid(sess.uid) != 0) {
+            perror("dinit: failed to set uid");
+            exit(1);
+        }
+    }
+    /* make up an environment */
+    char uenv[DIRLEN_MAX + 5];
+    char rundir[DIRLEN_MAX + sizeof("XDG_RUNTIME_DIR=")];
+    char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
+    char pnum[32];
+    std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
+    std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
+    std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
+    std::snprintf(pnum, sizeof(pnum), "%d", pipew);
+    if (sess.rundir[0]) {
+        std::snprintf(
+            rundir, sizeof(rundir), "XDG_RUNTIME_DIR=%s", sess.rundir
+        );
+    }
+    char const *envp[] = {
+        uenv, euid, egid,
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        sess.rundir[0] ? rundir : nullptr, nullptr
+    };
+    /* 6 args reserved + whatever service dirs + terminator */
+    char const *argp[8 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
+    std::size_t cidx = 0;
+    argp[cidx++] = "dinit";
+    argp[cidx++] = "--user";
+    argp[cidx++] = "--ready-fd";
+    argp[cidx++] = pnum;
+    argp[cidx++] = "--services-dir";
+    argp[cidx++] = tdir;
+    argp[cidx++] = "--services-dir";
+    argp[cidx++] = udir;
+    for (
+        std::size_t i = 0;
+        i < (sizeof(servpaths) / sizeof(*servpaths));
+        ++i
+    ) {
+        argp[cidx++] = "--services-dir";
+        argp[cidx++] = servpaths[i];
+    }
+    argp[cidx] = nullptr;
+    /* restore umask to user default */
+    umask(022);
+    /* fire */
+    execvpe("dinit", const_cast<char **>(argp), const_cast<char **>(envp));
+}
+
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
     int dpipe[2];
@@ -501,68 +568,7 @@ static bool dinit_start(session &sess) {
     print_dbg("dinit: launch");
     auto pid = fork();
     if (pid == 0) {
-        if (getuid() == 0) {
-            auto *pw = getpwuid(sess.uid);
-            if (!pw) {
-                perror("dinit: getpwuid failed");
-                exit(1);
-            }
-            if (setgid(sess.gid) != 0) {
-                perror("dinit: failed to set gid");
-                exit(1);
-            }
-            if (initgroups(pw->pw_name, sess.gid) != 0) {
-                perror("dinit: failed to set supplementary groups");
-                exit(1);
-            }
-            if (setuid(sess.uid) != 0) {
-                perror("dinit: failed to set uid");
-                exit(1);
-            }
-        }
-        /* make up an environment */
-        char uenv[DIRLEN_MAX + 5];
-        char rundir[DIRLEN_MAX + sizeof("XDG_RUNTIME_DIR=")];
-        char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
-        char pnum[32];
-        std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
-        std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
-        std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
-        std::snprintf(pnum, sizeof(pnum), "%d", dpipe[1]);
-        if (sess.rundir[0]) {
-            std::snprintf(
-                rundir, sizeof(rundir), "XDG_RUNTIME_DIR=%s", sess.rundir
-            );
-        }
-        char const *envp[] = {
-            uenv, euid, egid,
-            "PATH=/usr/local/bin:/usr/bin:/bin",
-            sess.rundir[0] ? rundir : nullptr, nullptr
-        };
-        /* 6 args reserved + whatever service dirs + terminator */
-        char const *argp[8 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
-        std::size_t cidx = 0;
-        argp[cidx++] = "dinit";
-        argp[cidx++] = "--user";
-        argp[cidx++] = "--ready-fd";
-        argp[cidx++] = pnum;
-        argp[cidx++] = "--services-dir";
-        argp[cidx++] = tdir;
-        argp[cidx++] = "--services-dir";
-        argp[cidx++] = udir;
-        for (
-            std::size_t i = 0;
-            i < (sizeof(servpaths) / sizeof(*servpaths));
-            ++i
-        ) {
-            argp[cidx++] = "--services-dir";
-            argp[cidx++] = servpaths[i];
-        }
-        argp[cidx] = nullptr;
-        /* restore umask to user default */
-        umask(022);
-        /* fire */
-        execvpe("dinit", const_cast<char **>(argp), const_cast<char **>(envp));
+        dinit_child(sess, dpipe[1], tdir, udir);
         exit(1);
     } else if (pid < 0) {
         print_err("dinit: fork failed (%s)", strerror(errno));
