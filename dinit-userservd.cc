@@ -78,7 +78,6 @@ struct session {
     std::vector<int> conns{};
     char *homedir = nullptr;
     char *sockptr = nullptr;
-    char dinit_tmp[6];
     pid_t dinit_pid = -1;
     pid_t start_pid = -1;
     pid_t term_pid = -1;
@@ -403,27 +402,58 @@ static constexpr char const *servpaths[] = {
     "/usr/lib/dinit.d/user",
 };
 
-static void dinit_child(
-    session &sess, int pipew, char const *tdir, char const *udir
-) {
+static void dinit_child(session &sess, int pipew) {
     if (getuid() == 0) {
         auto *pw = getpwuid(sess.uid);
         if (!pw) {
             perror("dinit: getpwuid failed");
-            exit(1);
+            return;
         }
         if (setgid(sess.gid) != 0) {
             perror("dinit: failed to set gid");
-            exit(1);
+            return;
         }
         if (initgroups(pw->pw_name, sess.gid) != 0) {
             perror("dinit: failed to set supplementary groups");
-            exit(1);
+            return;
         }
         if (setuid(sess.uid) != 0) {
             perror("dinit: failed to set uid");
-            exit(1);
+            return;
         }
+    }
+    /* set up dinit tempdir after we drop privileges */
+    char tdir[sizeof(USER_DIR) + UID_DIGITS + 32];
+    std::snprintf(
+        tdir, sizeof(tdir), USER_DIR, sess.uid,
+        static_cast<unsigned long>(getpid())
+    );
+    {
+        struct stat pstat;
+        if (stat(tdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            if (mkdir(tdir, 0700)) {
+                perror("dinit: mkdir failed");
+                return;
+            }
+        }
+    }
+    /* user services dir */
+    char udir[DIRLEN_MAX + 32];
+    std::snprintf(udir, sizeof(udir), "%s/.config/dinit.d", sess.homedir);
+    /* set up service file */
+    {
+        char uboot[sizeof(tdir) + 5];
+        std::snprintf(uboot, sizeof(uboot), "%s/boot", tdir);
+        auto *f = std::fopen(uboot, "w");
+        if (!f) {
+            perror("dinit: fopen failed");
+            return;
+        }
+        /* write boot service */
+        std::fprintf(f, "type = internal\n");
+        /* wait for a service directory */
+        std::fprintf(f, "waits-for.d = %s/boot.d\n", udir);
+        std::fclose(f);
     }
     /* make up an environment */
     char uenv[DIRLEN_MAX + 5];
@@ -473,66 +503,8 @@ static void dinit_child(
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
     int dpipe[2];
-    /* user dir */
-    char rdir[sizeof(USER_PATH) + UID_DIGITS];
-    std::snprintf(rdir, sizeof(rdir), USER_PATH, sess.uid);
-    /* temporary services dir */
-    char tdir[sizeof(USER_DIR) + UID_DIGITS];
-    std::snprintf(tdir, sizeof(tdir), USER_DIR, sess.uid);
     /* mark as waiting */
     sess.dinit_wait = true;
-    /* create /run/dinit-userservd/$UID if non-existent */
-    {
-        struct stat pstat;
-        if (stat(rdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
-            if (mkdir(rdir, 0700)) {
-                print_err("dinit: mkdir($UID) failed (%s)", strerror(errno));
-                return false;
-            }
-            if (chown(rdir, sess.uid, sess.gid) < 0) {
-                print_err("dinit: chown($UID) failed (%s)", strerror(errno));
-                rmdir(rdir);
-                return false;
-            }
-        }
-    }
-    /* create temporary services dir */
-    if (!mkdtemp(tdir)) {
-        print_err("dinit: mkdtemp failed (%s)", strerror(errno));
-        return false;
-    }
-    print_dbg("dinit: created service directory (%s)", tdir);
-    /* store the characters identifying the tempdir */
-    std::memcpy(sess.dinit_tmp, tdir + std::strlen(tdir) - 6, 6);
-    if (chown(tdir, sess.uid, sess.gid) < 0) {
-        print_err("dinit: chown failed (%s)", strerror(errno));
-        rmdir(tdir);
-        return false;
-    }
-    /* user services dir */
-    char udir[DIRLEN_MAX + 32];
-    std::snprintf(udir, sizeof(udir), "%s/.config/dinit.d", sess.homedir);
-    /* set up service file */
-    {
-        char uboot[sizeof(tdir) + 5];
-        std::snprintf(uboot, sizeof(uboot), "%s/boot", tdir);
-        auto *f = std::fopen(uboot, "w");
-        if (!f) {
-            print_err("dinit: fopen failed (%s)", strerror(errno));
-            return false;
-        }
-        /* write boot service */
-        std::fprintf(f, "type = internal\n");
-        /* wait for a service directory */
-        std::fprintf(f, "waits-for.d = %s/boot.d\n", udir);
-        std::fclose(f);
-        /* set perms otherwise we would infinite loop */
-        if (chown(uboot, sess.uid, sess.gid) < 0) {
-            print_err("dinit: chown failed (%s)", strerror(errno));
-            unlink(uboot);
-            return false;
-        }
-    }
     /* here we'll receive the dinit socket path once ready to take commands */
     if (pipe2(dpipe, O_NONBLOCK) < 0) {
         print_err("dinit: pipe failed (%s)", strerror(errno));
@@ -568,7 +540,7 @@ static bool dinit_start(session &sess) {
     print_dbg("dinit: launch");
     auto pid = fork();
     if (pid == 0) {
-        dinit_child(sess, dpipe[1], tdir, udir);
+        dinit_child(sess, dpipe[1]);
         exit(1);
     } else if (pid < 0) {
         print_err("dinit: fork failed (%s)", strerror(errno));
@@ -636,13 +608,15 @@ static bool dinit_reaper(pid_t pid) {
             sess.dinit_wait = false;
         } else if (pid == sess.term_pid) {
             /* temporary services dir */
-            char buf[sizeof(USER_DIR) + UID_DIGITS + 5];
+            char buf[sizeof(USER_DIR) + UID_DIGITS + 36];
             /* remove the generated service directory best we can
              *
              * it would be pretty harmless to just leave it too
              */
-            std::snprintf(buf, sizeof(buf), USER_DIR"/boot", sess.uid);
-            std::memcpy(std::strstr(buf, "XXXXXX"), sess.dinit_tmp, 6);
+            std::snprintf(
+                buf, sizeof(buf), USER_DIR"/boot", sess.uid,
+                static_cast<unsigned long>(sess.term_pid)
+            );
             print_dbg("dinit: remove %s", buf);
             unlink(buf);
             *std::strrchr(buf, '/') = '\0';
@@ -879,6 +853,32 @@ static bool handle_read(int fd) {
                         if (!rundir_make(sess->rundir, it->uid, it->gid)) {
                             pending_conns.erase(it);
                             return msg_send(fd, MSG_ERR);
+                        }
+                    }
+                    print_dbg("msg: create session dir for %u", it->uid);
+                    /* set up session dir */
+                    {
+                        char rdir[sizeof(USER_PATH) + UID_DIGITS];
+                        std::snprintf(rdir, sizeof(rdir), USER_PATH, it->uid);
+                        struct stat pstat;
+                        if (stat(rdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
+                            if (mkdir(rdir, 0700)) {
+                                print_err(
+                                    "msg: mkdir(%u) failed (%s)",
+                                    it->uid, strerror(errno)
+                                );
+                                pending_conns.erase(it);
+                                return msg_send(fd, MSG_ERR);
+                            }
+                            if (chown(rdir, it->uid, it->gid) < 0) {
+                                print_err(
+                                    "msg: chown(%u) failed (%s)",
+                                    it->uid, strerror(errno)
+                                );
+                                rmdir(rdir);
+                                pending_conns.erase(it);
+                                return msg_send(fd, MSG_ERR);
+                            }
                         }
                     }
                     print_dbg("msg: setup session %u", it->uid);

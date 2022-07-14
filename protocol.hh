@@ -12,7 +12,7 @@
 #define SOCK_PATH "/run/dinit-userservd"
 #define DAEMON_SOCK SOCK_PATH"/control.sock"
 #define USER_PATH SOCK_PATH"/%u"
-#define USER_DIR USER_PATH"/dinit.XXXXXX"
+#define USER_DIR USER_PATH"/dinit.%lu"
 
 /* maximum length of a directory path we can receive */
 #define DIRLEN_MAX 1024
