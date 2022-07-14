@@ -9,16 +9,10 @@
 
 #include <sys/un.h>
 
-#define RUNDIR_PATH "/run/user/%u"
 #define SOCK_PATH "/run/dinit-userservd"
 #define DAEMON_SOCK SOCK_PATH"/control.sock"
 #define USER_PATH SOCK_PATH"/%u"
 #define USER_DIR USER_PATH"/dinit.XXXXXX"
-
-/* sanity check */
-static_assert(
-    sizeof(DAEMON_SOCK) > sizeof(decltype(sockaddr_un{}.sun_family))
-);
 
 /* maximum length of a directory path we can receive */
 #define DIRLEN_MAX 1024
