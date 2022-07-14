@@ -504,22 +504,19 @@ static bool dinit_start(session &sess) {
         if (getuid() == 0) {
             auto *pw = getpwuid(sess.uid);
             if (!pw) {
-                print_err("dinit: getpwuid failed (%s)", strerror(errno));
+                perror("dinit: getpwuid failed");
                 exit(1);
             }
             if (setgid(sess.gid) != 0) {
-                print_err("dinit: failed to set gid (%s)", strerror(errno));
+                perror("dinit: failed to set gid");
                 exit(1);
             }
             if (initgroups(pw->pw_name, sess.gid) != 0) {
-                print_err(
-                    "dinit: failed to set supplementary groups (%s)",
-                    strerror(errno)
-                );
+                perror("dinit: failed to set supplementary groups");
                 exit(1);
             }
             if (setuid(sess.uid) != 0) {
-                print_err("dinit: failed to set uid (%s)", strerror(errno));
+                perror("dinit: failed to set uid");
                 exit(1);
             }
         }
