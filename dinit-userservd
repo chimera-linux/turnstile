@@ -1,5 +1,6 @@
 # dinit-userservd service
 
-type    = process
-command = /usr/bin/dinit-userservd
-logfile = /var/log/dinit-userservd.log
+type       = process
+depends-on = init
+command    = /usr/bin/dinit-userservd
+logfile    = /var/log/dinit-userservd.log
