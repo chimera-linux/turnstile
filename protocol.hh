@@ -10,8 +10,8 @@
 #include <sys/un.h>
 
 #define RUN_PATH "/run"
-#define SOCK_PATH RUN_PATH"/dinit-userservd"
-#define DAEMON_SOCK SOCK_PATH"/control.sock"
+#define SOCK_DIR "dinit-userservd"
+#define DAEMON_SOCK RUN_PATH "/" SOCK_DIR "/control.sock"
 
 /* maximum length of a directory path we can receive */
 #define DIRLEN_MAX 1024
