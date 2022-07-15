@@ -65,6 +65,9 @@ static cfg_data cdata;
  */
 static constexpr time_t const dinit_timeout = 60;
 
+/* the file descriptor for the base directory */
+static int userv_dirfd = -1;
+
 /* session information: contains a list of connections (which also provide
  * a way to know when to end the session, as the connection is persistent
  * on the PAM side) and some statekeeping info:
@@ -84,6 +87,7 @@ struct session {
     unsigned int uid = 0;
     unsigned int gid = 0;
     int userpipe = -1;
+    int dirfd = -1;
     bool dinit_wait = true;
     bool manage_rdir = false;
     char rundir[DIRLEN_MAX];
@@ -95,6 +99,14 @@ struct session {
 
     ~session() {
         std::free(homedir);
+    }
+
+    void remove_sdir() {
+        char uids[32];
+        std::snprintf(uids, sizeof(uids), "%u", this->uid);
+        unlinkat(userv_dirfd, uids, AT_REMOVEDIR);
+        close(this->dirfd);
+        this->dirfd = -1;
     }
 };
 
@@ -275,7 +287,7 @@ static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
     return true;
 }
 
-static bool rundir_clear_contents(int dfd) {
+static bool dir_clear_contents(int dfd) {
     DIR *d = fdopendir(dfd);
     if (!d) {
         print_err("rundir: fdopendir failed (%s)", strerror(errno));
@@ -321,7 +333,7 @@ static bool rundir_clear_contents(int dfd) {
         }
 
         if (S_ISDIR(st.st_mode)) {
-            if (!rundir_clear_contents(efd)) {
+            if (!dir_clear_contents(efd)) {
                 closedir(d);
                 return false;
             }
@@ -355,7 +367,7 @@ static void rundir_clear(char *rundir) {
         print_dbg("rundir: %s is not a directory", rundir);
         return;
     }
-    if (rundir_clear_contents(dfd)) {
+    if (dir_clear_contents(dfd)) {
         /* was empty */
         rmdir(rundir);
     } else {
@@ -423,18 +435,25 @@ static void dinit_child(session &sess, int pipew) {
         }
     }
     /* set up dinit tempdir after we drop privileges */
-    char tdir[sizeof(USER_DIR) + UID_DIGITS + 32];
+    char tdirn[38];
     std::snprintf(
-        tdir, sizeof(tdir), USER_DIR, sess.uid,
+        tdirn, sizeof(tdirn), "dinit.%lu",
         static_cast<unsigned long>(getpid())
     );
+    int tdirfd = openat(sess.dirfd, tdirn, O_RDONLY);
     {
         struct stat pstat;
-        if (stat(tdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
-            if (mkdir(tdir, 0700)) {
-                perror("dinit: mkdir failed");
+        if (fstat(tdirfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            if (mkdirat(sess.dirfd, tdirn, 0700)) {
+                perror("dinit: mkdirat failed");
                 return;
             }
+            close(tdirfd);
+            tdirfd = openat(sess.dirfd, tdirn, O_RDONLY);
+        }
+        if (fstat(tdirfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            fprintf(stderr, "dinit: failed to create dinit tempdir");
+            return;
         }
     }
     /* user services dir */
@@ -442,9 +461,13 @@ static void dinit_child(session &sess, int pipew) {
     std::snprintf(udir, sizeof(udir), "%s/.config/dinit.d", sess.homedir);
     /* set up service file */
     {
-        char uboot[sizeof(tdir) + 5];
-        std::snprintf(uboot, sizeof(uboot), "%s/boot", tdir);
-        auto *f = std::fopen(uboot, "w");
+        auto bfd = openat(tdirfd, "boot", O_WRONLY | O_CREAT | O_TRUNC);
+        if (bfd < 0) {
+            perror("dinit: openat failed");
+            return;
+        }
+        /* reopen as a real file handle, now owns bfd */
+        auto *f = fdopen(bfd, "w");
         if (!f) {
             perror("dinit: fopen failed");
             return;
@@ -456,10 +479,14 @@ static void dinit_child(session &sess, int pipew) {
         std::fclose(f);
     }
     /* make up an environment */
+    char tdir[DIRLEN_MAX];
     char uenv[DIRLEN_MAX + 5];
     char rundir[DIRLEN_MAX + sizeof("XDG_RUNTIME_DIR=")];
     char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
     char pnum[32];
+    std::snprintf(
+        tdir, sizeof(tdir), "%s/%u/%s", SOCK_PATH, sess.uid, tdirn
+    );
     std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
     std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
     std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
@@ -607,20 +634,9 @@ static bool dinit_reaper(pid_t pid) {
             sess.start_pid = -1;
             sess.dinit_wait = false;
         } else if (pid == sess.term_pid) {
-            /* temporary services dir */
-            char buf[sizeof(USER_DIR) + UID_DIGITS + 36];
-            /* remove the generated service directory best we can
-             *
-             * it would be pretty harmless to just leave it too
-             */
-            std::snprintf(
-                buf, sizeof(buf), USER_DIR"/boot", sess.uid,
-                static_cast<unsigned long>(sess.term_pid)
-            );
-            print_dbg("dinit: remove %s", buf);
-            unlink(buf);
-            *std::strrchr(buf, '/') = '\0';
-            rmdir(buf);
+            if (dir_clear_contents(sess.dirfd)) {
+                sess.remove_sdir();
+            }
             /* clear rundir if needed */
             if (sess.manage_rdir) {
                 rundir_clear(sess.rundir);
@@ -858,27 +874,59 @@ static bool handle_read(int fd) {
                     print_dbg("msg: create session dir for %u", it->uid);
                     /* set up session dir */
                     {
-                        char rdir[sizeof(USER_PATH) + UID_DIGITS];
-                        std::snprintf(rdir, sizeof(rdir), USER_PATH, it->uid);
+                        char uids[32];
+                        std::snprintf(uids, sizeof(uids), "%u", it->uid);
+                        sess->dirfd = openat(userv_dirfd, uids, O_RDONLY);
                         struct stat pstat;
-                        if (stat(rdir, &pstat) || !S_ISDIR(pstat.st_mode)) {
-                            if (mkdir(rdir, 0700)) {
+                        if (
+                            fstat(sess->dirfd, &pstat) ||
+                            !S_ISDIR(pstat.st_mode)
+                        ) {
+                            close(sess->dirfd);
+                            if (mkdirat(userv_dirfd, uids, 0700)) {
                                 print_err(
-                                    "msg: mkdir(%u) failed (%s)",
+                                    "msg: mkdirat(%u) failed (%s)",
                                     it->uid, strerror(errno)
                                 );
                                 pending_conns.erase(it);
                                 return msg_send(fd, MSG_ERR);
                             }
-                            if (chown(rdir, it->uid, it->gid) < 0) {
+                            if (fchownat(
+                                userv_dirfd, uids, it->uid, it->gid,
+                                AT_SYMLINK_NOFOLLOW
+                            )) {
                                 print_err(
-                                    "msg: chown(%u) failed (%s)",
+                                    "msg: fchownat(%u) failed (%s)",
                                     it->uid, strerror(errno)
                                 );
-                                rmdir(rdir);
+                                unlinkat(userv_dirfd, uids, AT_REMOVEDIR);
                                 pending_conns.erase(it);
                                 return msg_send(fd, MSG_ERR);
                             }
+                            sess->dirfd = openat(userv_dirfd, uids, O_RDONLY);
+                        }
+                        if (
+                            fstat(sess->dirfd, &pstat) ||
+                            !S_ISDIR(pstat.st_mode)
+                        ) {
+                            close(sess->dirfd);
+                            sess->dirfd = -1;
+                            print_err(
+                                "msg: failed to create session dir for %u",
+                                it->uid
+                            );
+                            pending_conns.erase(it);
+                            return msg_send(fd, MSG_ERR);
+                        }
+                        if (fcntl(sess->dirfd, F_SETFD, FD_CLOEXEC)) {
+                            print_err(
+                                "msg: fcntl failed (%s)", strerror(errno)
+                            );
+                            unlinkat(userv_dirfd, uids, AT_REMOVEDIR);
+                            pending_conns.erase(it);
+                            close(sess->dirfd);
+                            sess->dirfd = -1;
+                            return msg_send(fd, MSG_ERR);
                         }
                     }
                     print_dbg("msg: setup session %u", it->uid);
@@ -925,11 +973,18 @@ static void conn_term(int conn) {
             conv.erase(cit);
             /* empty now; shut down session */
             if (conv.empty()) {
+                char uids[32];
+                std::snprintf(uids, sizeof(uids), "%u", sess.uid);
                 print_dbg("dinit: stop");
                 if (sess.dinit_pid != -1) {
                     print_dbg("dinit: term");
                     kill(sess.dinit_pid, SIGTERM);
                     sess.term_pid = sess.dinit_pid;
+                } else {
+                    /* if no dinit, drop the dir early; otherwise wait
+                     * because we need to remove the boot service first
+                     */
+                    sess.remove_sdir();
                 }
                 sess.dinit_pid = -1;
                 sess.start_pid = -1;
@@ -1108,15 +1163,34 @@ int main(int argc, char **argv) {
 
     print_dbg("userservd: init signal fd");
 
+    userv_dirfd = open(SOCK_PATH, O_RDONLY);
     {
         struct stat pstat;
-        if (stat(SOCK_PATH, &pstat) || !S_ISDIR(pstat.st_mode)) {
-            /* create control directory */
-            if (mkdir(SOCK_PATH, 0755)) {
-                print_err("mkdir failed (%s)", strerror(errno));
+        if (fstat(userv_dirfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            int dfd = open(RUN_PATH, O_RDONLY);
+            /* ensure the base path exists and is a directory */
+            if (fstat(dfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
+                print_err("userservd base path does not exist");
                 return 1;
             }
+            /* create */
+            char const *sockp = SOCK_PATH;
+            if (mkdirat(dfd, strrchr(sockp, '/') + 1, 0755)) {
+                print_err("mkdirat failed (%s)", strerror(errno));
+                return 1;
+            }
+            close(userv_dirfd);
+            userv_dirfd = open(SOCK_PATH, O_RDONLY);
         }
+        if (fstat(userv_dirfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
+            print_err("could not create base directory");
+            return 1;
+        }
+    }
+    /* ensure it is not accessible by dinit child processes */
+    if (fcntl(userv_dirfd, F_SETFD, FD_CLOEXEC)) {
+        print_err("fcntl failed (%s)", strerror(errno));
+        return 1;
     }
 
     /* use a strict mask */
