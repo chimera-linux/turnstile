@@ -14,8 +14,16 @@ cpp = meson.get_compiler('cpp')
 pam_dep = dependency('pam', required: true)
 rt_dep = cpp.find_library('rt', required: false)
 
+conf_data = configuration_data()
+conf_data.set_quoted('RUN_PATH', get_option('rundir'))
+
+configure_file(output: 'config.hh', configuration: conf_data)
+
+extra_inc = [include_directories('.')]
+
 daemon = executable(
     'dinit-userservd', 'dinit-userservd.cc',
+    include_directories: extra_inc,
     install: true,
     dependencies: [rt_dep],
     gnu_symbol_visibility: 'hidden'
@@ -23,6 +31,7 @@ daemon = executable(
 
 pam_mod = shared_module(
     'pam_dinit_userservd', 'pam_dinit_userservd.cc',
+    include_directories: extra_inc,
     install: true,
     install_dir: join_paths(get_option('libdir'), 'security'),
     name_prefix: '',

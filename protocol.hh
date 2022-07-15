@@ -9,7 +9,12 @@
 
 #include <sys/un.h>
 
-#define RUN_PATH "/run"
+#include "config.hh"
+
+#ifndef RUN_PATH
+#error "No RUN_PATH is defined"
+#endif
+
 #define SOCK_DIR "dinit-userservd"
 #define DAEMON_SOCK RUN_PATH "/" SOCK_DIR "/control.sock"
 

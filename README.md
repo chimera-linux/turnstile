@@ -1,7 +1,7 @@
 # dinit-userservd
 
 **Note: this is currently an experimental project.** It may work, but there
-are no releases and no kitten lives are guarantees yet. The code is being
+are no releases and no kitten lives are guaranteed yet. The code is being
 cleaned up and improved, and there will be a release once stable.
 
 This is a daemon and a PAM module to handle user services management with the
