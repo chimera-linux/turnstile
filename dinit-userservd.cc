@@ -676,6 +676,144 @@ static bool msg_send(int fd, unsigned int msg) {
     return (msg != MSG_ERR);
 }
 
+static bool handle_session_new(
+    int fd, unsigned int msg, pending_conn &it, bool &done
+) {
+    /* first message after welcome */
+    if (it.pending_uid) {
+        print_dbg("msg: welcome uid %u", msg);
+        it.uid = msg;
+        it.pending_uid = 0;
+        return true;
+    }
+    /* first message after uid */
+    if (it.pending_gid) {
+        print_dbg("msg: welcome gid %u (uid %u)", msg, it.uid);
+        it.gid = msg;
+        it.pending_gid = 0;
+        return true;
+    }
+    if (it.pending_hdir) {
+        print_dbg("msg: getting homedir for %u (length: %u)", it.uid, msg);
+        /* no length or too long; reject */
+        if (!msg || (msg > DIRLEN_MAX)) {
+            return false;
+        }
+        it.homedir = static_cast<char *>(std::malloc(msg + 1));
+        if (!it.homedir) {
+            print_dbg("msg: failed to alloc %u bytes for %u", msg, it.uid);
+            return false;
+        }
+        it.dirgot = 0;
+        it.dirleft = msg;
+        it.pending_hdir = 0;
+        return true;
+    }
+    if (it.dirleft) {
+        auto pkt = MSG_SBYTES(it.dirleft);
+        std::memcpy(&it.homedir[it.dirgot], &msg, pkt);
+        it.dirgot += pkt;
+        it.dirleft -= pkt;
+    }
+    /* not done receiving homedir yet */
+    if (it.dirleft) {
+        return true;
+    }
+    /* done receiving, sanitize */
+    it.homedir[it.dirgot] = '\0';
+    auto hlen = std::strlen(it.homedir);
+    if (!hlen) {
+        return false;
+    }
+    while (it.homedir[hlen - 1] == '/') {
+        it.homedir[--hlen] = '\0';
+    }
+    if (!hlen) {
+        return false;
+    }
+    /* must be absolute */
+    if (it.homedir[0] != '/') {
+        return false;
+    }
+    /* ensure the homedir exists and is a directory,
+     * this also ensures the path is safe to use in
+     * unsanitized contexts without escaping
+     */
+    if (struct stat s; stat(it.homedir, &s) || !S_ISDIR(s.st_mode)) {
+        return false;
+    }
+    /* acknowledge the session */
+    print_dbg("msg: welcome %u (%s)", it.uid, it.homedir);
+    session *sess = nullptr;
+    for (auto &sessr: sessions) {
+        if (sessr.uid == it.uid) {
+            sess = &sessr;
+            break;
+        }
+    }
+    if (!sess) {
+        sess = &sessions.emplace_back();
+    }
+    for (auto c: sess->conns) {
+        if (c == fd) {
+            print_dbg("msg: already have session %u", it.uid);
+            return false;
+        }
+    }
+    std::memset(sess->rundir, 0, sizeof(sess->rundir));
+    if (!expand_rundir(
+        sess->rundir, sizeof(sess->rundir), cdata.rdir_path, it.uid, it.gid
+    )) {
+        print_dbg("msg: failed to expand rundir for %u", it.uid);
+        return false;
+    }
+    if (cdata.manage_rdir) {
+        print_dbg("msg: setup rundir for %u", it.uid);
+        if (!rundir_make(sess->rundir, it.uid, it.gid)) {
+            return false;
+        }
+    }
+    print_dbg("msg: create session dir for %u", it.uid);
+    /* set up session dir */
+    {
+        char uids[32];
+        std::snprintf(uids, sizeof(uids), "%u", it.uid);
+        /* make the directory itself */
+        sess->dirfd = dir_make_at(userv_dirfd, uids, 0700);
+        if (sess->dirfd < 0) {
+            print_err(
+                "msg: failed to make session dir for %u (%s)",
+                it.uid, strerror(errno)
+            );
+            return false;
+        }
+        /* ensure it's owned by the user */
+        if (fchownat(
+            userv_dirfd, uids, it.uid, it.gid, AT_SYMLINK_NOFOLLOW
+        ) || fcntl(sess->dirfd, F_SETFD, FD_CLOEXEC)) {
+            print_err(
+                "msg: session dir setup failed for %u (%s)",
+                it.uid, strerror(errno)
+            );
+            if (dir_clear_contents(sess->dirfd)) {
+                sess->remove_sdir();
+            }
+            return false;
+        }
+    }
+    print_dbg("msg: setup session %u", it.uid);
+    sess->conns.push_back(fd);
+    sess->uid = it.uid;
+    sess->gid = it.gid;
+    std::free(sess->homedir);
+    sess->homedir = it.homedir;
+    sess->manage_rdir = cdata.manage_rdir;
+    it.homedir = nullptr;
+    done = true;
+    /* reply */
+    return true;
+}
+
 static bool handle_read(int fd) {
     unsigned int msg;
     auto ret = recv(fd, &msg, sizeof(msg), 0);
@@ -759,168 +897,14 @@ static bool handle_read(int fd) {
                 it != pending_conns.end(); ++it
             ) {
                 if (it->conn == fd) {
-                    /* first message after welcome */
-                    if (it->pending_uid) {
-                        print_dbg("msg: welcome uid %u", msg);
-                        it->uid = msg;
-                        it->pending_uid = 0;
-                        return msg_send(fd, MSG_OK);
-                    }
-                    /* first message after uid */
-                    if (it->pending_gid) {
-                        print_dbg(
-                            "msg: welcome gid %u (uid %u)", msg, it->uid
-                        );
-                        it->gid = msg;
-                        it->pending_gid = 0;
-                        return msg_send(fd, MSG_OK);
-                    }
-                    if (it->pending_hdir) {
-                                print_dbg(
-                            "msg: getting homedir for %u (length: %u)",
-                            it->uid, msg
-                        );
-                        /* no length or too long; reject */
-                        if (!msg || (msg > DIRLEN_MAX)) {
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                                it->homedir = static_cast<char *>(
-                            std::malloc(msg + 1)
-                        );
-                        if (!it->homedir) {
-                            print_dbg(
-                                "msg: failed to alloc %u bytes for %u",
-                                msg, it->uid
-                            );
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                        it->dirgot = 0;
-                        it->dirleft = msg;
-                        it->pending_hdir = 0;
-                        return msg_send(fd, MSG_OK);
-                    }
-                    if (it->dirleft) {
-                        auto pkt = MSG_SBYTES(it->dirleft);
-                        std::memcpy(&it->homedir[it->dirgot], &msg, pkt);
-                        it->dirgot += pkt;
-                        it->dirleft -= pkt;
-                    }
-                    /* not done receiving homedir yet */
-                    if (it->dirleft) {
-                        return msg_send(fd, MSG_OK);
-                    }
-                    /* done receiving, sanitize */
-                    it->homedir[it->dirgot] = '\0';
-                    auto hlen = std::strlen(it->homedir);
-                    if (!hlen) {
+                    bool done = false;
+                    if (!handle_session_new(fd, msg, *it, done)) {
                         pending_conns.erase(it);
                         return msg_send(fd, MSG_ERR);
                     }
-                    while (it->homedir[hlen - 1] == '/') {
-                        it->homedir[--hlen] = '\0';
-                    }
-                    if (!hlen) {
+                    if (done) {
                         pending_conns.erase(it);
-                        return msg_send(fd, MSG_ERR);
                     }
-                    /* must be absolute */
-                    if (it->homedir[0] != '/') {
-                        pending_conns.erase(it);
-                        return msg_send(fd, MSG_ERR);
-                    }
-                    /* ensure the homedir exists and is a directory,
-                     * this also ensures the path is safe to use in
-                     * unsanitized contexts without escaping
-                     */
-                    if (
-                        struct stat s;
-                        stat(it->homedir, &s) || !S_ISDIR(s.st_mode)
-                    ) {
-                        pending_conns.erase(it);
-                        return msg_send(fd, MSG_ERR);
-                    }
-                    /* acknowledge the session */
-                    print_dbg("msg: welcome %u (%s)", it->uid, it->homedir);
-                    session *sess = nullptr;
-                    for (auto &sessr: sessions) {
-                        if (sessr.uid == it->uid) {
-                            sess = &sessr;
-                            break;
-                        }
-                    }
-                    if (!sess) {
-                        sess = &sessions.emplace_back();
-                    }
-                    for (auto c: sess->conns) {
-                        if (c == fd) {
-                            print_dbg(
-                                "msg: already have session %u", it->uid
-                            );
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                    }
-                    std::memset(sess->rundir, 0, sizeof(sess->rundir));
-                    if (!expand_rundir(
-                        sess->rundir, sizeof(sess->rundir),
-                        cdata.rdir_path, it->uid, it->gid
-                    )) {
-                        print_dbg(
-                            "msg: failed to expand rundir for %u", it->uid
-                        );
-                        pending_conns.erase(it);
-                        return msg_send(fd, MSG_ERR);
-                    }
-                    if (cdata.manage_rdir) {
-                        print_dbg("msg: setup rundir for %u", it->uid);
-                        if (!rundir_make(sess->rundir, it->uid, it->gid)) {
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                    }
-                    print_dbg("msg: create session dir for %u", it->uid);
-                    /* set up session dir */
-                    {
-                        char uids[32];
-                        std::snprintf(uids, sizeof(uids), "%u", it->uid);
-                        /* make the directory itself */
-                        sess->dirfd = dir_make_at(userv_dirfd, uids, 0700);
-                        if (sess->dirfd < 0) {
-                            print_err(
-                                "msg: failed to make session dir for %u (%s)",
-                                it->uid, strerror(errno)
-                            );
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                        /* ensure it's owned by the user */
-                        if (fchownat(
-                            userv_dirfd, uids, it->uid, it->gid,
-                            AT_SYMLINK_NOFOLLOW
-                        ) || fcntl(sess->dirfd, F_SETFD, FD_CLOEXEC)) {
-                            print_err(
-                                "msg: session dir setup failed for %u (%s)",
-                                it->uid, strerror(errno)
-                            );
-                            if (dir_clear_contents(sess->dirfd)) {
-                                sess->remove_sdir();
-                            }
-                            pending_conns.erase(it);
-                            return msg_send(fd, MSG_ERR);
-                        }
-                    }
-                    print_dbg("msg: setup session %u", it->uid);
-                    sess->conns.push_back(fd);
-                    sess->uid = it->uid;
-                    sess->gid = it->gid;
-                    std::free(sess->homedir);
-                    sess->homedir = it->homedir;
-                    sess->manage_rdir = cdata.manage_rdir;
-                    it->homedir = nullptr;
-                    pending_conns.erase(it);
-                    /* reply */
                     return msg_send(fd, MSG_OK);
                 }
             }
