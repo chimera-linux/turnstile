@@ -1,0 +1,4 @@
+option('rundir',
+    type: 'string', value: '/run',
+    description: 'Where the base directory will be located'
+)
