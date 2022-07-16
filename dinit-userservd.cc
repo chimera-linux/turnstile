@@ -291,26 +291,6 @@ static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
     return true;
 }
 
-static int dir_make_at(int dfd, char const *dname, mode_t mode) {
-    int sdfd = openat(dfd, dname, O_RDONLY);
-    struct stat st;
-    if (fstat(sdfd, &st) || !S_ISDIR(st.st_mode)) {
-        close(sdfd);
-        if (mkdirat(dfd, dname, mode)) {
-            return -1;
-        }
-        sdfd = openat(dfd, dname, O_RDONLY);
-        if (fstat(sdfd, &st)) {
-            return -1;
-        }
-        if (!S_ISDIR(st.st_mode)) {
-            errno = ENOTDIR;
-            return -1;
-        }
-    }
-    return sdfd;
-}
-
 static bool dir_clear_contents(int dfd) {
     DIR *d = fdopendir(dfd);
     if (!d) {
@@ -376,6 +356,34 @@ static bool dir_clear_contents(int dfd) {
 
     closedir(d);
     return true;
+}
+
+static int dir_make_at(int dfd, char const *dname, mode_t mode) {
+    int sdfd = openat(dfd, dname, O_RDONLY);
+    struct stat st;
+    if (fstat(sdfd, &st) || !S_ISDIR(st.st_mode)) {
+        close(sdfd);
+        if (mkdirat(dfd, dname, mode)) {
+            return -1;
+        }
+        sdfd = openat(dfd, dname, O_RDONLY);
+        if (fstat(sdfd, &st)) {
+            return -1;
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            errno = ENOTDIR;
+            return -1;
+        }
+    } else {
+        if (fchmod(sdfd, mode)) {
+            return -1;
+        }
+        if (!dir_clear_contents(sdfd)) {
+            errno = ENOTEMPTY;
+            return -1;
+        }
+    }
+    return sdfd;
 }
 
 static void rundir_clear(char *rundir) {
