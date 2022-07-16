@@ -16,6 +16,9 @@ rt_dep = cpp.find_library('rt', required: false)
 
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
+conf_data.set_quoted('CONF_PATH', join_paths(
+    get_option('prefix'), get_option('sysconfdir')
+))
 
 configure_file(output: 'config.hh', configuration: conf_data)
 
@@ -45,8 +48,14 @@ install_data(
     install_mode: 'rw-r--r--'
 )
 
-install_data(
-    'dinit-userservd.conf',
+uconf_data = configuration_data()
+uconf_data.set('RUN_PATH', get_option('rundir'))
+
+configure_file(
+    input: 'dinit-userservd.conf.in',
+    output: 'dinit-userservd.conf',
+    configuration: uconf_data,
+    install: true,
     install_dir: get_option('sysconfdir'),
     install_mode: 'rw-r--r--'
 )

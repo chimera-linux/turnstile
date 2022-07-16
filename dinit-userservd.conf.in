@@ -32,7 +32,7 @@ debug_stderr = no
 # and substituted in the string. Set to empty string if
 # you want to prevent it from being exported altogether.
 #
-rundir_path = /run/user/%u
+rundir_path = @RUN_PATH@/user/%u
 
 # Whether to manage the XDG_RUNTIME_DIR. By default, it
 # is assumed that something else manages it (typically

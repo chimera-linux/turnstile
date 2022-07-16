@@ -41,7 +41,11 @@
 
 #include "protocol.hh"
 
-#define DEFAULT_CFG_PATH "/etc/dinit-userservd.conf"
+#ifndef CONF_PATH
+#error "No CONF_PATH is defined"
+#endif
+
+#define DEFAULT_CFG_PATH CONF_PATH "/dinit-userservd.conf"
 
 struct cfg_data {
     bool debug = false;
@@ -51,7 +55,7 @@ struct cfg_data {
     char rdir_path[DIRLEN_MAX];
 
     cfg_data() {
-        std::snprintf(rdir_path, sizeof(rdir_path), "/run/user/%%u");
+        std::snprintf(rdir_path, sizeof(rdir_path), RUN_PATH "/user/%%u");
     }
 };
 
