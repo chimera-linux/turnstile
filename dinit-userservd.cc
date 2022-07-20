@@ -167,6 +167,7 @@ void print_dbg(F &&fmt, A const &...args) {
     }
     if (cdata.debug_stderr) {
         fprintf(stderr, fmt, args...);
+        fputc('\n', stderr);
     }
     syslog(LOG_DEBUG, fmt, args...);
 }
@@ -176,6 +177,7 @@ void print_err(F &&fmt, A const &...args) {
     static_assert(is_strlit<F>, "format string must be constant");
     if (cdata.debug_stderr) {
         fprintf(stderr, fmt, args...);
+        fputc('\n', stderr);
     }
     syslog(LOG_ERR, fmt, args...);
 }
