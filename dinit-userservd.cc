@@ -49,6 +49,7 @@
 #define DEFAULT_CFG_PATH CONF_PATH "/dinit-userservd.conf"
 
 struct cfg_data {
+    time_t dinit_timeout = 60;
     bool debug = false;
     bool debug_stderr = false;
     bool manage_rdir = false;
@@ -61,14 +62,6 @@ struct cfg_data {
 };
 
 static cfg_data cdata;
-
-/* timeout in case the dinit --user does not signal readiness
- *
- * we keep a timer for each waiting session, if no readiness is received
- * within that timespan, the service manager is terminated and failure
- * is issued to all the connections
- */
-static constexpr time_t const dinit_timeout = 60;
 
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
@@ -578,7 +571,7 @@ static bool dinit_start(session &sess) {
     pfd.events = POLLIN | POLLHUP;
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
-    {
+    if (cdata.dinit_timeout > 0) {
         auto &tm = timers.emplace_back();
         tm.uid = sess.uid;
         tm.sev.sigev_notify = SIGEV_SIGNAL;
@@ -591,13 +584,15 @@ static bool dinit_start(session &sess) {
         }
         /* arm timer, drop if it fails */
         itimerspec tval{};
-        tval.it_value.tv_sec = dinit_timeout;
+        tval.it_value.tv_sec = cdata.dinit_timeout;
         if (timer_settime(tm.timer, 0, &tval, nullptr) < 0) {
             print_err("dinit: timer_settime failed (%s)", strerror(errno));
             timer_delete(tm.timer);
             timers.pop_back();
             return false;
         }
+    } else {
+        print_dbg("dinit: no timeout");
     }
     /* launch dinit */
     print_dbg("dinit: launch");
@@ -1125,6 +1120,17 @@ static void read_cfg(char const *cfgpath) {
             read_bool("export_dbus_address", ass, cdata.export_dbus);
         } else if (!std::strcmp(bufp, "rundir_path")) {
             std::snprintf(cdata.rdir_path, sizeof(cdata.rdir_path), "%s", ass);
+        } else if (!std::strcmp(bufp, "login_timeout")) {
+            char *endp = nullptr;
+            auto tout = std::strtoul(ass, &endp, 10);
+            if (*endp || (endp == ass)) {
+                syslog(
+                    LOG_WARNING,
+                    "Invalid config value '%lu' for '%s' (expected integer)"
+                );
+            } else {
+                cdata.dinit_timeout = time_t(tout);
+            }
         }
     }
 }

@@ -52,3 +52,12 @@ manage_rundir = no
 # Valid values are 'yes' and 'no'.
 #
 export_dbus_address = yes
+
+# The timeout for the login. If the user services that
+# are a part of the initial startup process take longer
+# than this, the service manager instance is terminated
+# and all connections to the session are closed.
+#
+# The value is an integer and represents seconds.
+# If set to 0, the timeout is disabled.
+login_timeout = 60
