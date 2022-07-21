@@ -160,7 +160,7 @@ template<std::size_t N>
 constexpr inline bool is_strlit<char const (&)[N]> = true;
 
 template<typename F, typename ...A>
-void print_dbg(F &&fmt, A const &...args) {
+inline void print_dbg(F &&fmt, A const &...args) {
     static_assert(is_strlit<F>, "format string must be constant");
     if (!cdata.debug) {
         return;
@@ -173,7 +173,7 @@ void print_dbg(F &&fmt, A const &...args) {
 }
 
 template<typename F, typename ...A>
-void print_err(F &&fmt, A const &...args) {
+inline void print_err(F &&fmt, A const &...args) {
     static_assert(is_strlit<F>, "format string must be constant");
     if (cdata.debug_stderr) {
         fprintf(stderr, fmt, args...);
