@@ -60,4 +60,5 @@ export_dbus_address = yes
 #
 # The value is an integer and represents seconds.
 # If set to 0, the timeout is disabled.
+#
 login_timeout = 60
