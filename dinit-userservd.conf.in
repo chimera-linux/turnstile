@@ -26,6 +26,27 @@ debug = no
 #
 debug_stderr = no
 
+# The directory containing service links that must be
+# started in order for the login to proceed. Can be
+# empty, in which case nothing is waited for.
+# Relative to the home directory.
+#
+boot_dir = .config/dinit.d/boot.d
+
+# A directory user service files are read from. Can be
+# set multiple times, in which case multiple service
+# directories will be used. Relative paths are within
+# the user's home directory. The ordering matters, as
+# earlier directories will be checked first.
+#
+# If no directory is set in the config file, a default
+# list is used, which is equal to the example list here.
+#
+services_dir = .config/dinit.d
+services_dir = /etc/dinit.d/user
+services_dir = /usr/local/lib/dinit.d/user
+services_dir = /usr/lib/dinit.d/user
+
 # The value of XDG_RUNTIME_DIR that is exported into the
 # user service environment. Special values '%u' (user ID),
 # '%g' (group ID) and '%%' (the character %) are allowed

@@ -22,6 +22,7 @@
 #include <ctime>
 #include <limits>
 #include <vector>
+#include <string>
 #include <algorithm>
 #include <type_traits>
 
@@ -54,17 +55,23 @@ struct cfg_data {
     bool debug_stderr = false;
     bool manage_rdir = false;
     bool export_dbus = true;
-    char rdir_path[DIRLEN_MAX];
-
-    cfg_data() {
-        std::snprintf(rdir_path, sizeof(rdir_path), RUN_PATH "/user/%%u");
-    }
+    std::string rdir_path = RUN_PATH "/user/%u";
+    std::string boot_path = ".config/dinit.d/boot.d";
+    std::vector<std::string> srv_paths{};
 };
 
 static cfg_data cdata;
 
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
+
+/* service directory paths defaults */
+static constexpr char const *servpaths[] = {
+    ".config/dinit.d",
+    "/etc/dinit.d/user",
+    "/usr/local/lib/dinit.d/user",
+    "/usr/lib/dinit.d/user",
+};
 
 /* session information: contains a list of connections (which also provide
  * a way to know when to end the session, as the connection is persistent
@@ -90,6 +97,7 @@ struct session {
     bool manage_rdir = false;
     char rundir[DIRLEN_MAX];
     char csock[sizeof(sockaddr_un{}.sun_path)];
+    char uids[32], gids[32];
 
     session() {
         sockptr = csock;
@@ -100,9 +108,7 @@ struct session {
     }
 
     void remove_sdir() {
-        char uids[32];
-        std::snprintf(uids, sizeof(uids), "%u", this->uid);
-        unlinkat(userv_dirfd, uids, AT_REMOVEDIR);
+        unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
         close(this->dirfd);
         this->dirfd = -1;
     }
@@ -180,7 +186,7 @@ static constexpr int const UID_DIGITS = \
 
 static bool expand_rundir(
     char *dest, std::size_t destsize, char const *tmpl,
-    unsigned int uid, unsigned int gid
+    char const *uid, char const *gid
 ) {
     auto destleft = destsize;
     while (*tmpl) {
@@ -219,7 +225,7 @@ static bool expand_rundir(
             return false;
         }
         ++mark;
-        unsigned int wnum;
+        char const *wnum;
         switch (mark[0]) {
             case 'u':
                 wnum = uid;
@@ -231,10 +237,11 @@ writenum:
                     /* not enough space */
                     return false;
                 } else {
-                    auto nw = std::snprintf(dest, destleft, "%u", wnum);
-                    if (nw >= int(destleft)) {
+                    auto nw = std::strlen(wnum);
+                    if (nw >= destleft) {
                         return false;
                     }
+                    std::memcpy(dest, wnum, nw);
                     dest += nw;
                     destleft -= nw;
                     tmpl = mark + 1;
@@ -447,14 +454,7 @@ static bool dinit_boot(session &sess) {
     return true;
 }
 
-/* global service directory paths */
-static constexpr char const *servpaths[] = {
-    "/etc/dinit.d/user",
-    "/usr/local/lib/dinit.d/user",
-    "/usr/lib/dinit.d/user",
-};
-
-static void dinit_child(session &sess, int pipew) {
+static void dinit_child(session &sess, char const *pipenum) {
     if (getuid() == 0) {
         auto *pw = getpwuid(sess.uid);
         if (!pw) {
@@ -485,9 +485,6 @@ static void dinit_child(session &sess, int pipew) {
         perror("dinit: failed to create dinit dir");
         return;
     }
-    /* user services dir */
-    char udir[DIRLEN_MAX + 32];
-    std::snprintf(udir, sizeof(udir), "%s/.config/dinit.d", sess.homedir);
     /* set up service file */
     {
         auto bfd = openat(tdirfd, "boot", O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -504,56 +501,70 @@ static void dinit_child(session &sess, int pipew) {
         /* write boot service */
         std::fprintf(f, "type = internal\n");
         /* wait for a service directory */
-        std::fprintf(f, "waits-for.d = %s/boot.d\n", udir);
+        if (cdata.boot_path.data()[0] == '/') {
+            std::fprintf(f, "waits-for.d = %s\n", cdata.boot_path.data());
+        } else {
+            std::fprintf(
+                f, "waits-for.d = %s/%s\n", sess.homedir,
+                cdata.boot_path.data()
+            );
+        }
         std::fclose(f);
     }
-    /* make up an environment */
-    char tdir[DIRLEN_MAX];
-    char uenv[DIRLEN_MAX + 5];
-    char rundir[DIRLEN_MAX + sizeof("XDG_RUNTIME_DIR=")];
-    char euid[UID_DIGITS + 5], egid[UID_DIGITS + 5];
-    char pnum[32];
-    std::snprintf(
-        tdir, sizeof(tdir), "%s/%s/%u/%s", RUN_PATH, SOCK_DIR, sess.uid, tdirn
-    );
-    std::snprintf(uenv, sizeof(uenv), "HOME=%s", sess.homedir);
-    std::snprintf(euid, sizeof(euid), "UID=%u", sess.uid);
-    std::snprintf(egid, sizeof(egid), "GID=%u", sess.gid);
-    std::snprintf(pnum, sizeof(pnum), "%d", pipew);
-    if (sess.rundir[0]) {
-        std::snprintf(
-            rundir, sizeof(rundir), "XDG_RUNTIME_DIR=%s", sess.rundir
-        );
-    }
-    char const *envp[] = {
-        uenv, euid, egid,
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-        sess.rundir[0] ? rundir : nullptr, nullptr
+    /* build up env and args list */
+    std::vector<char> execs{};
+    std::size_t argc = 0, nexec = 0;
+    auto add_str = [&execs, &nexec](auto &&...s) {
+        (execs.insert(execs.end(), s, s + std::strlen(s)), ...);
+        execs.push_back('\0');
+        ++nexec;
     };
-    /* 6 args reserved + whatever service dirs + terminator */
-    char const *argp[8 + (sizeof(servpaths) / sizeof(*servpaths)) * 2 + 1];
-    std::size_t cidx = 0;
-    argp[cidx++] = "dinit";
-    argp[cidx++] = "--user";
-    argp[cidx++] = "--ready-fd";
-    argp[cidx++] = pnum;
-    argp[cidx++] = "--services-dir";
-    argp[cidx++] = tdir;
-    argp[cidx++] = "--services-dir";
-    argp[cidx++] = udir;
-    for (
-        std::size_t i = 0;
-        i < (sizeof(servpaths) / sizeof(*servpaths));
-        ++i
-    ) {
-        argp[cidx++] = "--services-dir";
-        argp[cidx++] = servpaths[i];
+    /* argv starts here */
+    add_str("dinit");
+    add_str("--user");
+    add_str("--ready-fd");
+    add_str(pipenum);
+    add_str("--services-dir");
+    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
+    /* onwards */
+    for (auto &sp: cdata.srv_paths) {
+        add_str("--services-dir");
+        if (sp.data()[0] != '/') {
+            add_str(sess.homedir, "/", sp.data());
+        } else {
+            add_str(sp.data());
+        }
     }
-    argp[cidx] = nullptr;
+    argc = nexec;
+    /* environment starts here */
+    add_str("HOME=", sess.homedir);
+    add_str("UID=", sess.uids);
+    add_str("GID=", sess.gids);
+    add_str("PATH=/usr/local/bin:/usr/bin:/bin");
+    if (sess.rundir[0]) {
+        add_str("XDG_RUNTIME_DIR=", sess.rundir);
+    }
+    /* make up env and arg arrays */
+    std::vector<char const *> argp{};
+    {
+        char const *execsp = execs.data();
+        argp.reserve(nexec + 2);
+        for (std::size_t i = 0; i < argc; ++i) {
+            argp.push_back(execsp);
+            execsp += std::strlen(execsp) + 1;
+        }
+        argp.push_back(nullptr);
+        for (std::size_t i = argc; i < nexec; ++i) {
+            argp.push_back(execsp);
+            execsp += std::strlen(execsp) + 1;
+        }
+        argp.push_back(nullptr);
+    }
+    auto *argv = const_cast<char **>(&argp[0]);
     /* restore umask to user default */
     umask(022);
     /* fire */
-    execvpe("dinit", const_cast<char **>(argp), const_cast<char **>(envp));
+    execvpe("dinit", argv, argv + argc + 1);
 }
 
 /* start the dinit instance for a session */
@@ -598,7 +609,9 @@ static bool dinit_start(session &sess) {
     print_dbg("dinit: launch");
     auto pid = fork();
     if (pid == 0) {
-        dinit_child(sess, dpipe[1]);
+        char pipestr[32];
+        std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe[1]);
+        dinit_child(sess, pipestr);
         exit(1);
     } else if (pid < 0) {
         print_err("dinit: fork failed (%s)", strerror(errno));
@@ -776,6 +789,9 @@ static bool handle_session_new(
     if (!sess) {
         sess = &sessions.emplace_back();
     }
+    /* write uid and gid strings */
+    std::snprintf(sess->uids, sizeof(sess->uids), "%u", it.uid);
+    std::snprintf(sess->gids, sizeof(sess->gids), "%u", it.gid);
     for (auto c: sess->conns) {
         if (c == fd) {
             print_dbg("msg: already have session %u", it.uid);
@@ -784,7 +800,8 @@ static bool handle_session_new(
     }
     std::memset(sess->rundir, 0, sizeof(sess->rundir));
     if (!expand_rundir(
-        sess->rundir, sizeof(sess->rundir), cdata.rdir_path, it.uid, it.gid
+        sess->rundir, sizeof(sess->rundir), cdata.rdir_path.data(),
+        sess->uids, sess->gids
     )) {
         print_dbg("msg: failed to expand rundir for %u", it.uid);
         return false;
@@ -798,10 +815,8 @@ static bool handle_session_new(
     print_dbg("msg: create session dir for %u", it.uid);
     /* set up session dir */
     {
-        char uids[32];
-        std::snprintf(uids, sizeof(uids), "%u", it.uid);
         /* make the directory itself */
-        sess->dirfd = dir_make_at(userv_dirfd, uids, 0700);
+        sess->dirfd = dir_make_at(userv_dirfd, sess->uids, 0700);
         if (sess->dirfd < 0) {
             print_err(
                 "msg: failed to make session dir for %u (%s)",
@@ -811,7 +826,7 @@ static bool handle_session_new(
         }
         /* ensure it's owned by the user */
         if (fchownat(
-            userv_dirfd, uids, it.uid, it.gid, AT_SYMLINK_NOFOLLOW
+            userv_dirfd, sess->uids, it.uid, it.gid, AT_SYMLINK_NOFOLLOW
         ) || fcntl(sess->dirfd, F_SETFD, FD_CLOEXEC)) {
             print_err(
                 "msg: session dir setup failed for %u (%s)",
@@ -961,8 +976,6 @@ static void conn_term(int conn) {
             conv.erase(cit);
             /* empty now; shut down session */
             if (conv.empty()) {
-                char uids[32];
-                std::snprintf(uids, sizeof(uids), "%u", sess.uid);
                 print_dbg("dinit: stop");
                 if (sess.dinit_pid != -1) {
                     print_dbg("dinit: term");
@@ -1119,7 +1132,7 @@ static void read_cfg(char const *cfgpath) {
         } else if (!std::strcmp(bufp, "export_dbus_address")) {
             read_bool("export_dbus_address", ass, cdata.export_dbus);
         } else if (!std::strcmp(bufp, "rundir_path")) {
-            std::snprintf(cdata.rdir_path, sizeof(cdata.rdir_path), "%s", ass);
+            cdata.rdir_path = ass;
         } else if (!std::strcmp(bufp, "login_timeout")) {
             char *endp = nullptr;
             auto tout = std::strtoul(ass, &endp, 10);
@@ -1131,6 +1144,10 @@ static void read_cfg(char const *cfgpath) {
             } else {
                 cdata.dinit_timeout = time_t(tout);
             }
+        } else if (!std::strcmp(bufp, "boot_dir")) {
+            cdata.boot_path = ass;
+        } else if (!std::strcmp(bufp, "services_dir")) {
+            cdata.srv_paths.push_back(ass);
         }
     }
 }
@@ -1158,6 +1175,14 @@ int main(int argc, char **argv) {
         read_cfg(argv[1]);
     } else {
         read_cfg(DEFAULT_CFG_PATH);
+    }
+
+    /* default service paths if needed */
+    if (cdata.srv_paths.empty()) {
+        auto npaths = sizeof(servpaths) / sizeof(*servpaths);
+        for (std::size_t i = 0; i < npaths; ++i) {
+            cdata.srv_paths.push_back(servpaths[i]);
+        }
     }
 
     print_dbg("userservd: init signal fd");
