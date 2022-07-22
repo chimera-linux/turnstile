@@ -24,7 +24,6 @@
 #include <vector>
 #include <string>
 #include <algorithm>
-#include <type_traits>
 
 #include <syslog.h>
 #include <pwd.h>
@@ -151,35 +150,29 @@ static std::vector<pollfd> pipes;
 /* timer list */
 static std::vector<session_timer> timers;
 
-/* sanity checking */
-template<typename T>
-constexpr inline bool is_strlit = false;
+/* these are macros for a simple reason; making them functions will trigger
+ * format-security warnings (even though it's technically always safe for
+ * us, there is no way to bypass that portably) and making it a C-style
+ * vararg function is not possible (because vsyslog is not standard)
+ *
+ * in a macro we just pass things through, so it's completely safe
+ */
 
-template<std::size_t N>
-constexpr inline bool is_strlit<char const (&)[N]> = true;
+#define print_dbg(...) \
+    if (cdata.debug) { \
+        if (cdata.debug_stderr) { \
+            fprintf(stderr, __VA_ARGS__); \
+            fputc('\n', stderr); \
+        } \
+        syslog(LOG_DEBUG, __VA_ARGS__); \
+    }
 
-template<typename F, typename ...A>
-inline void print_dbg(F &&fmt, A const &...args) {
-    static_assert(is_strlit<F>, "format string must be constant");
-    if (!cdata.debug) {
-        return;
-    }
-    if (cdata.debug_stderr) {
-        fprintf(stderr, fmt, args...);
-        fputc('\n', stderr);
-    }
-    syslog(LOG_DEBUG, fmt, args...);
-}
-
-template<typename F, typename ...A>
-inline void print_err(F &&fmt, A const &...args) {
-    static_assert(is_strlit<F>, "format string must be constant");
-    if (cdata.debug_stderr) {
-        fprintf(stderr, fmt, args...);
-        fputc('\n', stderr);
-    }
-    syslog(LOG_ERR, fmt, args...);
-}
+#define print_err(...) \
+    if (cdata.debug_stderr) { \
+        fprintf(stderr, __VA_ARGS__); \
+        fputc('\n', stderr); \
+    } \
+    syslog(LOG_ERR, __VA_ARGS__);
 
 static constexpr int const UID_DIGITS = \
     std::numeric_limits<unsigned int>::digits10;
