@@ -20,7 +20,6 @@
 #include <climits>
 #include <cctype>
 #include <ctime>
-#include <limits>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -173,9 +172,6 @@ static std::vector<session_timer> timers;
         fputc('\n', stderr); \
     } \
     syslog(LOG_ERR, __VA_ARGS__);
-
-static constexpr int const UID_DIGITS = \
-    std::numeric_limits<unsigned int>::digits10;
 
 static bool expand_rundir(
     char *dest, std::size_t destsize, char const *tmpl,
