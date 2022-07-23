@@ -17,31 +17,40 @@
 
 #include "protocol.hh"
 
-/* session information: contains a list of connections (which also provide
- * a way to know when to end the session, as the connection is persistent
- * on the PAM side) and some statekeeping info:
- *
- * - the running service manager instance PID as well as PID of bootup job
- * - the user and group ID of the session's user
- * - dinit readiness notification pipe
- * - whether dinit is currently waiting for readiness notification
- */
+/* represents a collection of logins for a specific user id */
 struct session {
+    /* a list of connection file descriptors for this session */
     std::vector<int> conns{};
+    /* home directory path received from the PAM module */
     char *homedir = nullptr;
+    /* points to a place within csock, used to keep track
+     * when reading the socket path off the userpipe
+     */
     char *sockptr = nullptr;
+    /* the PID of the dinit process we are currently managing */
     pid_t dinit_pid = -1;
+    /* the PID of the dinitctl process that reports final readiness */
     pid_t start_pid = -1;
+    /* the PID of the dinit process that is currently dying */
     pid_t term_pid = -1;
+    /* user and group IDs read off the first connection */
     unsigned int uid = 0;
     unsigned int gid = 0;
+    /* the read end of the pipe that dinit uses to signal command readiness */
     int userpipe = -1;
+    /* session directory descriptor */
     int dirfd = -1;
+    /* true unless dinit_pid has completely finished starting */
     bool dinit_wait = true;
+    /* false unless waiting for term_pid to quit before starting again */
     bool dinit_pending = false;
+    /* whether to manage XDG_RUNTIME_DIR (typically false) */
     bool manage_rdir = false;
+    /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
+    /* dinit control socket path, read off userpipe */
     char csock[sizeof(sockaddr_un{}.sun_path)];
+    /* string versions of uid and gid */
     char uids[32], gids[32];
 
     session() {

@@ -96,7 +96,10 @@ static bool dinit_start(session &sess) {
     int dpipe[2];
     /* mark as waiting */
     sess.dinit_wait = true;
-    /* make rundir if needed */
+    /* make rundir if needed, we don't want to create that and session dir
+     * any earlier than here as here we are sure the previous instance has
+     * definitely terminated and stuff like session dirfd is actually clear
+     */
     if (cdata->manage_rdir) {
         print_dbg("dinit: setup rundir for %u", sess.uid);
         if (!rundir_make(sess.rundir, sess.uid, sess.gid)) {
