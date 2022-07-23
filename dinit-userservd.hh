@@ -38,6 +38,7 @@ struct session {
     int userpipe = -1;
     int dirfd = -1;
     bool dinit_wait = true;
+    bool dinit_pending = false;
     bool manage_rdir = false;
     char rundir[DIRLEN_MAX];
     char csock[sizeof(sockaddr_un{}.sun_path)];

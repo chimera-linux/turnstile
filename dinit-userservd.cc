@@ -96,6 +96,39 @@ static bool dinit_start(session &sess) {
     int dpipe[2];
     /* mark as waiting */
     sess.dinit_wait = true;
+    /* make rundir if needed */
+    if (cdata->manage_rdir) {
+        print_dbg("dinit: setup rundir for %u", sess.uid);
+        if (!rundir_make(sess.rundir, sess.uid, sess.gid)) {
+            return false;
+        }
+    }
+    print_dbg("dinit: create session dir for %u", sess.uid);
+    /* set up session dir */
+    {
+        /* make the directory itself */
+        sess.dirfd = dir_make_at(userv_dirfd, sess.uids, 0700);
+        if (sess.dirfd < 0) {
+            print_err(
+                "dinit: failed to make session dir for %u (%s)",
+                sess.uid, strerror(errno)
+            );
+            return false;
+        }
+        /* ensure it's owned by the user */
+        if (fchownat(
+            userv_dirfd, sess.uids, sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
+        ) || fcntl(sess.dirfd, F_SETFD, FD_CLOEXEC)) {
+            print_err(
+                "dinit: session dir setup failed for %u (%s)",
+                sess.uid, strerror(errno)
+            );
+            if (dir_clear_contents(sess.dirfd)) {
+                sess.remove_sdir();
+            }
+            return false;
+        }
+    }
     /* here we'll receive the dinit socket path once ready to take commands */
     if (pipe2(dpipe, O_NONBLOCK) < 0) {
         print_err("dinit: pipe failed (%s)", strerror(errno));
@@ -143,6 +176,7 @@ static bool dinit_start(session &sess) {
     }
     /* close the write end on our side */
     close(dpipe[1]);
+    sess.dinit_pending = false;
     sess.dinit_pid = pid;
     sess.userpipe = pfd.fd;
     return true;
@@ -262,38 +296,6 @@ static bool handle_session_new(
         print_dbg("msg: failed to expand rundir for %u", it.uid);
         return false;
     }
-    if (cdata->manage_rdir) {
-        print_dbg("msg: setup rundir for %u", it.uid);
-        if (!rundir_make(sess->rundir, it.uid, it.gid)) {
-            return false;
-        }
-    }
-    print_dbg("msg: create session dir for %u", it.uid);
-    /* set up session dir */
-    {
-        /* make the directory itself */
-        sess->dirfd = dir_make_at(userv_dirfd, sess->uids, 0700);
-        if (sess->dirfd < 0) {
-            print_err(
-                "msg: failed to make session dir for %u (%s)",
-                it.uid, strerror(errno)
-            );
-            return false;
-        }
-        /* ensure it's owned by the user */
-        if (fchownat(
-            userv_dirfd, sess->uids, it.uid, it.gid, AT_SYMLINK_NOFOLLOW
-        ) || fcntl(sess->dirfd, F_SETFD, FD_CLOEXEC)) {
-            print_err(
-                "msg: session dir setup failed for %u (%s)",
-                it.uid, strerror(errno)
-            );
-            if (dir_clear_contents(sess->dirfd)) {
-                sess->remove_sdir();
-            }
-            return false;
-        }
-    }
     print_dbg("msg: setup session %u", it.uid);
     sess->conns.push_back(fd);
     sess->uid = it.uid;
@@ -340,9 +342,15 @@ static bool handle_read(int fd) {
                 return msg_send(fd, MSG_OK_DONE);
             } else {
                 if (sess->dinit_pid == -1) {
-                    print_dbg("msg: start service manager");
-                    if (!dinit_start(*sess)) {
-                        return false;
+                    if (sess->term_pid != -1) {
+                        /* we are still waiting for old dinit to terminate */
+                        print_dbg("msg: still waiting for old dinit term");
+                        sess->dinit_pending = true;
+                    } else {
+                        print_dbg("msg: start service manager");
+                        if (!dinit_start(*sess)) {
+                            return false;
+                        }
                     }
                 }
                 msg = MSG_OK_WAIT;
@@ -605,6 +613,9 @@ static bool dinit_reaper(pid_t pid) {
                 sess.manage_rdir = false;
             }
             sess.term_pid = -1;
+            if (sess.dinit_pending) {
+                return dinit_start(sess);
+            }
         }
     }
     return true;
