@@ -953,38 +953,43 @@ static void sighandler(int sign) {
     write(sigpipe[1], &sign, sizeof(int));
 }
 
+/* terminate given conn, but only if within session */
+static bool conn_term_sess(session &sess, int conn) {
+    for (auto cit = sess.conns.begin(); cit != sess.conns.end(); ++cit) {
+        if (*cit != conn) {
+            continue;
+        }
+        print_dbg(
+            "conn: close %d for session %u",
+            conn, sess.uid
+        );
+        sess.conns.erase(cit);
+        /* empty now; shut down session */
+        if (sess.conns.empty()) {
+            print_dbg("dinit: stop");
+            if (sess.dinit_pid != -1) {
+                print_dbg("dinit: term");
+                kill(sess.dinit_pid, SIGTERM);
+                sess.term_pid = sess.dinit_pid;
+            } else {
+                /* if no dinit, drop the dir early; otherwise wait
+                 * because we need to remove the boot service first
+                 */
+                sess.remove_sdir();
+            }
+            sess.dinit_pid = -1;
+            sess.start_pid = -1;
+            sess.dinit_wait = true;
+        }
+        close(conn);
+        return true;
+    }
+    return false;
+}
+
 static void conn_term(int conn) {
     for (auto &sess: sessions) {
-        auto &conv = sess.conns;
-        for (
-            auto cit = conv.begin(); cit != conv.end(); ++cit
-        ) {
-            if (*cit != conn) {
-                continue;
-            }
-            print_dbg(
-                "conn: close %d for session %u",
-                conn, sess.uid
-            );
-            conv.erase(cit);
-            /* empty now; shut down session */
-            if (conv.empty()) {
-                print_dbg("dinit: stop");
-                if (sess.dinit_pid != -1) {
-                    print_dbg("dinit: term");
-                    kill(sess.dinit_pid, SIGTERM);
-                    sess.term_pid = sess.dinit_pid;
-                } else {
-                    /* if no dinit, drop the dir early; otherwise wait
-                     * because we need to remove the boot service first
-                     */
-                    sess.remove_sdir();
-                }
-                sess.dinit_pid = -1;
-                sess.start_pid = -1;
-                sess.dinit_wait = true;
-            }
-            close(conn);
+        if (conn_term_sess(sess, conn)) {
             return;
         }
     }
@@ -1261,12 +1266,18 @@ int main(int argc, char **argv) {
                         continue;
                     }
                     print_dbg("userservd: drop session %u", sess.uid);
-                    /* notify errors; this will make clients close their
-                     * connections, and once all of them are gone, the
-                     * server can safely terminate it
-                     */
-                    for (auto c: sess.conns) {
-                        msg_send(c, MSG_ERR);
+                    /* terminate all connections belonging to this session */
+                    for (std::size_t j = 2; j < fds.size(); ++j) {
+                        if (conn_term_sess(sess, fds[j].fd)) {
+                            fds[j].fd = -1;
+                            fds[j].revents = 0;
+                        }
+                    }
+                    /* this should never happen unless we have a bug */
+                    if (!sess.conns.empty()) {
+                        print_err("userservd: conns not empty, it should be");
+                        /* unrecoverable */
+                        return 1;
                     }
                     break;
                 }
