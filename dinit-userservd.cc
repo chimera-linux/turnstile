@@ -17,7 +17,6 @@
 #include <cassert>
 #include <climits>
 #include <cctype>
-#include <ctime>
 #include <algorithm>
 
 #include <poll.h>
@@ -36,6 +35,12 @@
 #endif
 
 #define DEFAULT_CFG_PATH CONF_PATH "/dinit-userservd.conf"
+
+/* when stopping dinit, we first do a SIGTERM and set up this timeout,
+ * if it fails to quit within that period, we issue a SIGKILL and try
+ * this timeout again, after that it is considered unrecoverable
+ */
+static constexpr std::time_t kill_timeout = 60;
 
 /* global */
 cfg_data *cdata = nullptr;
@@ -77,6 +82,30 @@ void session::remove_sdir() {
     unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
     close(this->dirfd);
     this->dirfd = -1;
+}
+
+bool session::arm_timer(std::time_t timeout) {
+    if (timer_create(CLOCK_MONOTONIC, &timer_sev, &timer) < 0) {
+        print_err("timer: timer_create failed (%s)", strerror(errno));
+        return false;
+    }
+    itimerspec tval{};
+    tval.it_value.tv_sec = timeout;
+    if (timer_settime(timer, 0, &tval, nullptr) < 0) {
+        print_err("timer: timer_settime failed (%s)", strerror(errno));
+        timer_delete(timer);
+        return false;
+    }
+    timer_armed = true;
+    return true;
+}
+
+void session::disarm_timer() {
+    if (!timer_armed) {
+        return;
+    }
+    timer_delete(timer);
+    timer_armed = false;
 }
 
 static std::vector<session> sessions;
@@ -141,20 +170,9 @@ static bool dinit_start(session &sess) {
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
     if (cdata->dinit_timeout > 0) {
-        /* create timer, drop if it fails */
-        if (timer_create(CLOCK_MONOTONIC, &sess.timer_sev, &sess.timer) < 0) {
-            print_err("dinit: timer_create failed (%s)", strerror(errno));
+        if (!sess.arm_timer(cdata->dinit_timeout)) {
             return false;
         }
-        /* arm timer, drop if it fails */
-        itimerspec tval{};
-        tval.it_value.tv_sec = cdata->dinit_timeout;
-        if (timer_settime(sess.timer, 0, &tval, nullptr) < 0) {
-            print_err("dinit: timer_settime failed (%s)", strerror(errno));
-            timer_delete(sess.timer);
-            return false;
-        }
-        sess.timer_armed = true;
     } else {
         print_dbg("dinit: no timeout");
     }
@@ -453,6 +471,8 @@ static bool conn_term_sess(session &sess, int conn) {
                 print_dbg("dinit: term");
                 kill(sess.dinit_pid, SIGTERM);
                 sess.term_pid = sess.dinit_pid;
+                /* just in case */
+                sess.arm_timer(kill_timeout);
             } else {
                 /* if no dinit, drop the dir early; otherwise wait
                  * because we need to remove the boot service first
@@ -535,8 +555,27 @@ static bool sig_handle_alrm(void *data) {
     auto &sess = *static_cast<session *>(data);
     /* disarm the timer first, before it has a chance to fire */
     print_dbg("userservd: drop timer");
-    timer_delete(sess.timer);
-    sess.timer_armed = false;
+    if (!sess.timer_armed) {
+        /* this should never happen, unrecoverable */
+        print_err("timer: handling alrm but timer not armed");
+        return false;
+    }
+    sess.disarm_timer();
+    if (sess.term_pid != -1) {
+        if (sess.kill_tried) {
+            print_err(
+                "userservd: dinit process %ld refused to die",
+                static_cast<long>(sess.term_pid)
+            );
+            return false;
+        }
+        /* we are waiting for dinit to die and it did not die, attempt kill */
+        kill(sess.term_pid, SIGKILL);
+        sess.kill_tried = true;
+        /* re-arm the timer, if that fails again, we give up */
+        sess.arm_timer(kill_timeout);
+        return true;
+    }
     /* terminate all connections belonging to this session */
     print_dbg("userservd: drop session %u", sess.uid);
     for (std::size_t j = 2; j < fds.size(); ++j) {
@@ -596,13 +635,12 @@ static bool dinit_reaper(pid_t pid) {
             }
             /* disarm an associated timer */
             print_dbg("dinit: disarm timer");
-            if (sess.timer_armed) {
-                timer_delete(sess.timer);
-                sess.timer_armed = false;
-            }
+            sess.disarm_timer();
             sess.start_pid = -1;
             sess.dinit_wait = false;
         } else if (pid == sess.term_pid) {
+            /* if there was a timer on the session, safe to drop it now */
+            sess.disarm_timer();
             if (dir_clear_contents(sess.dirfd)) {
                 sess.remove_sdir();
             }
@@ -612,6 +650,7 @@ static bool dinit_reaper(pid_t pid) {
                 sess.manage_rdir = false;
             }
             sess.term_pid = -1;
+            sess.kill_tried = false;
             if (sess.dinit_pending) {
                 return dinit_start(sess);
             }

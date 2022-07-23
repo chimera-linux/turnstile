@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,8 @@ struct session {
     bool manage_rdir = false;
     /* whether the timer is actually currently set up */
     bool timer_armed = false;
+    /* whether a SIGKILL was attempted */
+    bool kill_tried = false;
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
     /* dinit control socket path, read off userpipe */
@@ -62,6 +65,8 @@ struct session {
     session();
     ~session();
     void remove_sdir();
+    bool arm_timer(std::time_t);
+    void disarm_timer();
 };
 
 /* filesystem utilities */
