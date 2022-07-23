@@ -1062,6 +1062,156 @@ static void read_bool(char const *name, char const *value, bool &val) {
     }
 }
 
+static bool sig_handle_alrm() {
+    print_dbg("userservd: sigalrm");
+    /* timer, take the closest one */
+    auto &tm = timers.front();
+    /* find its session */
+    for (auto &sess: sessions) {
+        if (sess.uid != tm.uid) {
+            continue;
+        }
+        print_dbg("userservd: drop session %u", sess.uid);
+        /* terminate all connections belonging to this session */
+        for (std::size_t j = 2; j < fds.size(); ++j) {
+            if (conn_term_sess(sess, fds[j].fd)) {
+                fds[j].fd = -1;
+                fds[j].revents = 0;
+            }
+        }
+        /* this should never happen unless we have a bug */
+        if (!sess.conns.empty()) {
+            print_err("userservd: conns not empty, it should be");
+            /* unrecoverable */
+            return false;
+        }
+        break;
+    }
+    print_dbg("userservd: drop timer");
+    timer_delete(tm.timer);
+    timers.erase(timers.begin());
+    return true;
+}
+
+static bool sig_handle_chld() {
+    pid_t wpid;
+    int status;
+    print_dbg("userservd: sigchld");
+    /* reap */
+    while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
+        /* deal with each pid here */
+        if (!dinit_reaper(wpid)) {
+            print_err(
+                "userservd: failed to restart dinit (%u)\n",
+                static_cast<unsigned int>(wpid)
+            );
+            /* this is an unrecoverable condition */
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool fd_handle_pipe(std::size_t i, bool &do_break) {
+    if (fds[i].revents == 0) {
+        return true;
+    }
+    /* find if this is a pipe */
+    session *sess = nullptr;
+    for (auto &sessr: sessions) {
+        if (fds[i].fd == sessr.userpipe) {
+            sess = &sessr;
+            break;
+        }
+    }
+    if (!sess) {
+        do_break = true;
+        return true;
+    }
+    if (fds[i].revents & POLLIN) {
+        auto *endp = &sess->csock[sizeof(sess->csock) - 1];
+        /* read the socket path */
+        for (;;) {
+            if (sess->sockptr == endp) {
+                /* just in case, break off reading past the limit */
+                char b;
+                /* eat whatever else is in the pipe */
+                while (read(fds[i].fd, &b, 1) == 1) {}
+                break;
+            }
+            if (read(fds[i].fd, sess->sockptr++, 1) != 1) {
+                break;
+            }
+        }
+    }
+    if (fds[i].revents & POLLHUP) {
+        /* kill the pipe, we don't need it anymore */
+        close(sess->userpipe);
+        sess->userpipe = -1;
+        fds[i].fd = -1;
+        fds[i].revents = 0;
+        /* but error early if needed */
+        if (!sess->csock[0]) {
+            print_err("read failed (%s)", strerror(errno));
+            return true;
+        }
+        /* wait for the boot service to come up */
+        if (!dinit_boot(*sess)) {
+            /* this is an unrecoverable condition */
+            return false;
+        }
+        /* reset the buffer for next time */
+        sess->sockptr = sess->csock;
+        std::memset(sess->csock, 0, sizeof(sess->csock));
+    }
+    return true;
+}
+
+static bool fd_handle_conn(std::size_t i) {
+    if (fds[i].revents == 0) {
+        return true;
+    }
+    if (fds[i].revents & POLLHUP) {
+        conn_term(fds[i].fd);
+        fds[i].fd = -1;
+        fds[i].revents = 0;
+        return true;
+    }
+    if (fds[i].revents & POLLIN) {
+        /* input on connection */
+        if (!handle_read(fds[i].fd)) {
+            print_err("read: handler failed (terminate connection)");
+            conn_term(fds[i].fd);
+            fds[i].fd = -1;
+            fds[i].revents = 0;
+            return true;
+        }
+    }
+    return true;
+}
+
+static void sock_handle_conn() {
+    if (!fds[1].revents) {
+        return;
+    }
+    for (;;) {
+        auto afd = accept4(
+            fds[1].fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC
+        );
+        if (afd < 0) {
+            if (errno != EAGAIN) {
+                /* should not happen? disregard the connection */
+                print_err("accept4 failed (%s)", strerror(errno));
+            }
+            break;
+        }
+        auto &rfd = fds.emplace_back();
+        rfd.fd = afd;
+        rfd.events = POLLIN | POLLHUP;
+        print_dbg("conn: accepted %d for %d", afd, fds[1].fd);
+    }
+}
+
 static void read_cfg(char const *cfgpath) {
     char buf[DIRLEN_MAX];
 
@@ -1257,148 +1407,33 @@ int main(int argc, char **argv) {
                 goto do_compact;
             }
             if (sign == SIGALRM) {
-                print_dbg("userservd: sigalrm");
-                /* timer, take the closest one */
-                auto &tm = timers.front();
-                /* find its session */
-                for (auto &sess: sessions) {
-                    if (sess.uid != tm.uid) {
-                        continue;
-                    }
-                    print_dbg("userservd: drop session %u", sess.uid);
-                    /* terminate all connections belonging to this session */
-                    for (std::size_t j = 2; j < fds.size(); ++j) {
-                        if (conn_term_sess(sess, fds[j].fd)) {
-                            fds[j].fd = -1;
-                            fds[j].revents = 0;
-                        }
-                    }
-                    /* this should never happen unless we have a bug */
-                    if (!sess.conns.empty()) {
-                        print_err("userservd: conns not empty, it should be");
-                        /* unrecoverable */
-                        return 1;
-                    }
-                    break;
+                if (!sig_handle_alrm()) {
+                    return 1;
                 }
-                print_dbg("userservd: drop timer");
-                timer_delete(tm.timer);
-                timers.erase(timers.begin());
                 goto signal_done;
             }
             /* this is a SIGCHLD */
-            pid_t wpid;
-            int status;
-            print_dbg("userservd: sigchld");
-            /* reap */
-            while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
-                /* deal with each pid here */
-                if (!dinit_reaper(wpid)) {
-                    print_err(
-                        "userservd: failed to restart dinit (%u)\n",
-                        static_cast<unsigned int>(wpid)
-                    );
-                    /* this is an unrecoverable condition */
-                    return 1;
-                }
+            if (!sig_handle_chld()) {
+                return 1;
             }
         }
 signal_done:
         /* check incoming connections on control socket */
-        if (fds[1].revents) {
-            for (;;) {
-                auto afd = accept4(
-                    fds[1].fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC
-                );
-                if (afd < 0) {
-                    if (errno != EAGAIN) {
-                        /* should not happen? disregard the connection */
-                        print_err("accept4 failed (%s)", strerror(errno));
-                    }
-                    break;
-                }
-                auto &rfd = fds.emplace_back();
-                rfd.fd = afd;
-                rfd.events = POLLIN | POLLHUP;
-                print_dbg("conn: accepted %d for %d", afd, fds[1].fd);
-            }
-        }
+        sock_handle_conn();
         /* check on pipes */
         for (i = 2; i < fds.size(); ++i) {
-            if (fds[i].revents == 0) {
-                continue;
+            bool do_break = false;
+            if (!fd_handle_pipe(i, do_break)) {
+                return 1;
             }
-            /* find if this is a pipe */
-            session *sess = nullptr;
-            for (auto &sessr: sessions) {
-                if (fds[i].fd == sessr.userpipe) {
-                    sess = &sessr;
-                    break;
-                }
-            }
-            if (!sess) {
+            if (do_break) {
                 break;
-            }
-            if (fds[i].revents & POLLIN) {
-                auto *endp = &sess->csock[sizeof(sess->csock) - 1];
-                /* read the socket path */
-                for (;;) {
-                    if (sess->sockptr == endp) {
-                        /* just in case, break off reading past the limit */
-                        char b;
-                        /* eat whatever else is in the pipe */
-                        while (read(fds[i].fd, &b, 1) == 1) {}
-                        break;
-                    }
-                    if (read(fds[i].fd, sess->sockptr++, 1) != 1) {
-                        break;
-                    }
-                }
-            }
-            if (fds[i].revents & POLLHUP) {
-                /* kill the pipe, we don't need it anymore */
-                close(sess->userpipe);
-                sess->userpipe = -1;
-                fds[i].fd = -1;
-                fds[i].revents = 0;
-                /* but error early if needed */
-                if (!sess->csock[0]) {
-                    print_err("read failed (%s)", strerror(errno));
-                    continue;
-                }
-                /* wait for the boot service to come up */
-                if (!dinit_boot(*sess)) {
-                    /* this is an unrecoverable condition */
-                    return 1;
-                }
-                /* reset the buffer for next time */
-                sess->sockptr = sess->csock;
-                std::memset(sess->csock, 0, sizeof(sess->csock));
-                continue;
             }
         }
         /* check on connections */
         for (; i < fds.size(); ++i) {
-            if (fds[i].revents == 0) {
-                continue;
-            }
-            if (fds[i].revents & POLLHUP) {
-                conn_term(fds[i].fd);
-                fds[i].fd = -1;
-                fds[i].revents = 0;
-                continue;
-            }
-            if (fds[i].revents & POLLIN) {
-                /* input on connection */
-                if (!handle_read(fds[i].fd)) {
-                    fprintf(
-                        stderr, "read: handler failed (terminate connection)\n"
-                    );
-                    conn_term(fds[i].fd);
-                    fds[i].fd = -1;
-                    fds[i].revents = 0;
-                    continue;
-                }
+            if (!fd_handle_conn(i)) {
+                return 1;
             }
         }
 do_compact:
