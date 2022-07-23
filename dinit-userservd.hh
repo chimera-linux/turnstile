@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <signal.h>
 #include <syslog.h>
 #include <sys/stat.h>
 
@@ -33,6 +34,9 @@ struct session {
     pid_t start_pid = -1;
     /* the PID of the dinit process that is currently dying */
     pid_t term_pid = -1;
+    /* session timer; there can be only one per session */
+    timer_t timer{};
+    sigevent timer_sev{};
     /* user and group IDs read off the first connection */
     unsigned int uid = 0;
     unsigned int gid = 0;
@@ -46,6 +50,8 @@ struct session {
     bool dinit_pending = false;
     /* whether to manage XDG_RUNTIME_DIR (typically false) */
     bool manage_rdir = false;
+    /* whether the timer is actually currently set up */
+    bool timer_armed = false;
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
     /* dinit control socket path, read off userpipe */
@@ -53,10 +59,7 @@ struct session {
     /* string versions of uid and gid */
     char uids[32], gids[32];
 
-    session() {
-        sockptr = csock;
-    }
-
+    session();
     ~session();
     void remove_sdir();
 };

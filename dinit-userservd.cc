@@ -22,7 +22,6 @@
 
 #include <poll.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -63,11 +62,12 @@ struct pending_conn {
     }
 };
 
-struct session_timer {
-    timer_t timer{};
-    sigevent sev{};
-    unsigned int uid = 0;
-};
+session::session() {
+    sockptr = csock;
+    timer_sev.sigev_notify = SIGEV_SIGNAL;
+    timer_sev.sigev_signo = SIGALRM;
+    timer_sev.sigev_value.sival_ptr = this;
+}
 
 session::~session() {
     std::free(homedir);
@@ -88,8 +88,6 @@ static std::vector<pollfd> fds;
 static int ctl_sock;
 /* requests for new pipes; picked up by the event loop and cleared */
 static std::vector<pollfd> pipes;
-/* timer list */
-static std::vector<session_timer> timers;
 
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
@@ -143,25 +141,20 @@ static bool dinit_start(session &sess) {
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
     if (cdata->dinit_timeout > 0) {
-        auto &tm = timers.emplace_back();
-        tm.uid = sess.uid;
-        tm.sev.sigev_notify = SIGEV_SIGNAL;
-        tm.sev.sigev_signo = SIGALRM;
         /* create timer, drop if it fails */
-        if (timer_create(CLOCK_MONOTONIC, &tm.sev, &tm.timer) < 0) {
+        if (timer_create(CLOCK_MONOTONIC, &sess.timer_sev, &sess.timer) < 0) {
             print_err("dinit: timer_create failed (%s)", strerror(errno));
-            timers.pop_back();
             return false;
         }
         /* arm timer, drop if it fails */
         itimerspec tval{};
         tval.it_value.tv_sec = cdata->dinit_timeout;
-        if (timer_settime(tm.timer, 0, &tval, nullptr) < 0) {
+        if (timer_settime(sess.timer, 0, &tval, nullptr) < 0) {
             print_err("dinit: timer_settime failed (%s)", strerror(errno));
-            timer_delete(tm.timer);
-            timers.pop_back();
+            timer_delete(sess.timer);
             return false;
         }
+        sess.timer_armed = true;
     } else {
         print_dbg("dinit: no timeout");
     }
@@ -423,8 +416,23 @@ static bool handle_read(int fd) {
 
 static int sigpipe[2] = {-1, -1};
 
-static void sighandler(int sign) {
-    write(sigpipe[1], &sign, sizeof(int));
+struct sig_data {
+    int sign;
+    void *datap;
+};
+
+static void chld_handler(int sign) {
+    sig_data d;
+    d.sign = sign;
+    d.datap = nullptr;
+    write(sigpipe[1], &d, sizeof(d));
+}
+
+static void timer_handler(int sign, siginfo_t *si, void *) {
+    sig_data d;
+    d.sign = sign;
+    d.datap = si->si_value.sival_ptr;
+    write(sigpipe[1], &d, sizeof(d));
 }
 
 /* terminate given conn, but only if within session */
@@ -522,34 +530,27 @@ fail:
     return false;
 }
 
-static bool sig_handle_alrm() {
+static bool sig_handle_alrm(void *data) {
     print_dbg("userservd: sigalrm");
-    /* timer, take the closest one */
-    auto &tm = timers.front();
-    /* find its session */
-    for (auto &sess: sessions) {
-        if (sess.uid != tm.uid) {
-            continue;
-        }
-        print_dbg("userservd: drop session %u", sess.uid);
-        /* terminate all connections belonging to this session */
-        for (std::size_t j = 2; j < fds.size(); ++j) {
-            if (conn_term_sess(sess, fds[j].fd)) {
-                fds[j].fd = -1;
-                fds[j].revents = 0;
-            }
-        }
-        /* this should never happen unless we have a bug */
-        if (!sess.conns.empty()) {
-            print_err("userservd: conns not empty, it should be");
-            /* unrecoverable */
-            return false;
-        }
-        break;
-    }
+    auto &sess = *static_cast<session *>(data);
+    /* disarm the timer first, before it has a chance to fire */
     print_dbg("userservd: drop timer");
-    timer_delete(tm.timer);
-    timers.erase(timers.begin());
+    timer_delete(sess.timer);
+    sess.timer_armed = false;
+    /* terminate all connections belonging to this session */
+    print_dbg("userservd: drop session %u", sess.uid);
+    for (std::size_t j = 2; j < fds.size(); ++j) {
+        if (conn_term_sess(sess, fds[j].fd)) {
+            fds[j].fd = -1;
+            fds[j].revents = 0;
+        }
+    }
+    /* this should never happen unless we have a bug */
+    if (!sess.conns.empty()) {
+        print_err("userservd: conns not empty, it should be");
+        /* unrecoverable */
+        return false;
+    }
     return true;
 }
 
@@ -595,14 +596,9 @@ static bool dinit_reaper(pid_t pid) {
             }
             /* disarm an associated timer */
             print_dbg("dinit: disarm timer");
-            for (
-                auto it = timers.begin(); it != timers.end(); ++it
-            ) {
-                if (it->uid == sess.uid) {
-                    timer_delete(it->timer);
-                    timers.erase(it);
-                    break;
-                }
+            if (sess.timer_armed) {
+                timer_delete(sess.timer);
+                sess.timer_armed = false;
             }
             sess.start_pid = -1;
             sess.dinit_wait = false;
@@ -744,17 +740,26 @@ static void sock_handle_conn() {
 }
 
 int main(int argc, char **argv) {
-    if (signal(SIGCHLD, sighandler) == SIG_ERR) {
+    /* establish simple signal handler for sigchld */
+    if (signal(SIGCHLD, chld_handler) == SIG_ERR) {
         perror("signal failed");
+        return 1;
     }
-    if (signal(SIGALRM, sighandler) == SIG_ERR) {
-        perror("signal failed");
+    /* establish more complicated signal handler for timers */
+    {
+        struct sigaction sa;
+        sa.sa_flags = SA_SIGINFO;
+        sa.sa_sigaction = timer_handler;
+        sigemptyset(&sa.sa_mask);
+        if (sigaction(SIGALRM, &sa, nullptr) == -1) {
+            perror("sigaction failed");
+            return 1;
+        }
     }
 
     /* prealloc a bunch of space */
     pending_conns.reserve(8);
     sessions.reserve(16);
-    timers.reserve(16);
     fds.reserve(64);
     pipes.reserve(8);
 
@@ -840,13 +845,13 @@ int main(int argc, char **argv) {
         }
         /* check signal fd */
         if (fds[0].revents == POLLIN) {
-            int sign;
-            if (read(fds[0].fd, &sign, sizeof(int)) != sizeof(int)) {
+            sig_data sd;
+            if (read(fds[0].fd, &sd, sizeof(sd)) != sizeof(sd)) {
                 print_err("signal read failed (%s)", strerror(errno));
                 goto do_compact;
             }
-            if (sign == SIGALRM) {
-                if (!sig_handle_alrm()) {
+            if (sd.sign == SIGALRM) {
+                if (!sig_handle_alrm(sd.datap)) {
                     return 1;
                 }
                 goto signal_done;
