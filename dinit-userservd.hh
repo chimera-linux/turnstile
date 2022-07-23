@@ -15,7 +15,41 @@
 #include <syslog.h>
 #include <sys/stat.h>
 
-#include "config.hh"
+#include "protocol.hh"
+
+/* session information: contains a list of connections (which also provide
+ * a way to know when to end the session, as the connection is persistent
+ * on the PAM side) and some statekeeping info:
+ *
+ * - the running service manager instance PID as well as PID of bootup job
+ * - the user and group ID of the session's user
+ * - dinit readiness notification pipe
+ * - whether dinit is currently waiting for readiness notification
+ */
+struct session {
+    std::vector<int> conns{};
+    char *homedir = nullptr;
+    char *sockptr = nullptr;
+    pid_t dinit_pid = -1;
+    pid_t start_pid = -1;
+    pid_t term_pid = -1;
+    unsigned int uid = 0;
+    unsigned int gid = 0;
+    int userpipe = -1;
+    int dirfd = -1;
+    bool dinit_wait = true;
+    bool manage_rdir = false;
+    char rundir[DIRLEN_MAX];
+    char csock[sizeof(sockaddr_un{}.sun_path)];
+    char uids[32], gids[32];
+
+    session() {
+        sockptr = csock;
+    }
+
+    ~session();
+    void remove_sdir();
+};
 
 /* filesystem utilities */
 int dir_make_at(int dfd, char const *dname, mode_t mode);
@@ -30,6 +64,10 @@ bool cfg_expand_rundir(
     char const *uid, char const *gid
 );
 void cfg_populate_srvdirs();
+
+/* dinit utilities */
+void dinit_child(session &sess, char const *pipenum);
+bool dinit_boot(session &sess);
 
 struct cfg_data {
     time_t dinit_timeout = 60;

@@ -28,6 +28,7 @@ daemon_sources = [
     'dinit-userservd.cc',
     'fs_utils.cc',
     'cfg_utils.cc',
+    'dinit_utils.cc',
 ]
 
 daemon = executable(

@@ -4,7 +4,6 @@
 #include <climits>
 
 #include "dinit-userservd.hh"
-#include "protocol.hh"
 
 static void read_bool(char const *name, char const *value, bool &val) {
     if (!std::strcmp(value, "yes")) {

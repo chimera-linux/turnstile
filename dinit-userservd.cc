@@ -20,13 +20,10 @@
 #include <ctime>
 #include <algorithm>
 
-#include <pwd.h>
-#include <grp.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
-#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/types.h>
@@ -34,7 +31,6 @@
 #include <sys/un.h>
 
 #include "dinit-userservd.hh"
-#include "protocol.hh"
 
 #ifndef CONF_PATH
 #error "No CONF_PATH is defined"
@@ -47,47 +43,6 @@ cfg_data *cdata = nullptr;
 
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
-
-/* session information: contains a list of connections (which also provide
- * a way to know when to end the session, as the connection is persistent
- * on the PAM side) and some statekeeping info:
- *
- * - the running service manager instance PID as well as PID of bootup job
- * - the user and group ID of the session's user
- * - dinit readiness notification pipe
- * - whether dinit is currently waiting for readiness notification
- */
-struct session {
-    std::vector<int> conns{};
-    char *homedir = nullptr;
-    char *sockptr = nullptr;
-    pid_t dinit_pid = -1;
-    pid_t start_pid = -1;
-    pid_t term_pid = -1;
-    unsigned int uid = 0;
-    unsigned int gid = 0;
-    int userpipe = -1;
-    int dirfd = -1;
-    bool dinit_wait = true;
-    bool manage_rdir = false;
-    char rundir[DIRLEN_MAX];
-    char csock[sizeof(sockaddr_un{}.sun_path)];
-    char uids[32], gids[32];
-
-    session() {
-        sockptr = csock;
-    }
-
-    ~session() {
-        std::free(homedir);
-    }
-
-    void remove_sdir() {
-        unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
-        close(this->dirfd);
-        this->dirfd = -1;
-    }
-};
 
 struct pending_conn {
     pending_conn():
@@ -114,6 +69,16 @@ struct session_timer {
     unsigned int uid = 0;
 };
 
+session::~session() {
+    std::free(homedir);
+}
+
+void session::remove_sdir() {
+    unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
+    close(this->dirfd);
+    this->dirfd = -1;
+}
+
 static std::vector<session> sessions;
 static std::vector<pending_conn> pending_conns;
 
@@ -125,151 +90,6 @@ static int ctl_sock;
 static std::vector<pollfd> pipes;
 /* timer list */
 static std::vector<session_timer> timers;
-
-static bool dinit_boot(session &sess) {
-    print_dbg("dinit: boot wait");
-    auto pid = fork();
-    if (pid < 0) {
-        print_err("dinit: fork failed (%s)", strerror(errno));
-        /* unrecoverable */
-        return false;
-    }
-    if (pid != 0) {
-        /* parent process */
-        sess.start_pid = pid;
-        return true;
-    }
-    /* child process */
-    if (getuid() == 0) {
-        if (setgid(sess.gid) != 0) {
-            print_err("dinit: failed to set gid (%s)", strerror(errno));
-            exit(1);
-        }
-        if (setuid(sess.uid) != 0) {
-            print_err("dinit: failed to set uid (%s)", strerror(errno));
-            exit(1);
-        }
-    }
-    execlp(
-        "dinitctl", "dinitctl",
-        "--socket-path", sess.csock, "start", "boot", nullptr
-    );
-    exit(1);
-    return true;
-}
-
-static void dinit_child(session &sess, char const *pipenum) {
-    if (getuid() == 0) {
-        auto *pw = getpwuid(sess.uid);
-        if (!pw) {
-            perror("dinit: getpwuid failed");
-            return;
-        }
-        if (setgid(sess.gid) != 0) {
-            perror("dinit: failed to set gid");
-            return;
-        }
-        if (initgroups(pw->pw_name, sess.gid) != 0) {
-            perror("dinit: failed to set supplementary groups");
-            return;
-        }
-        if (setuid(sess.uid) != 0) {
-            perror("dinit: failed to set uid");
-            return;
-        }
-    }
-    /* set up dinit tempdir after we drop privileges */
-    char tdirn[38];
-    std::snprintf(
-        tdirn, sizeof(tdirn), "dinit.%lu",
-        static_cast<unsigned long>(getpid())
-    );
-    int tdirfd = dir_make_at(sess.dirfd, tdirn, 0700);
-    if (tdirfd < 0) {
-        perror("dinit: failed to create dinit dir");
-        return;
-    }
-    /* set up service file */
-    {
-        auto bfd = openat(tdirfd, "boot", O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (bfd < 0) {
-            perror("dinit: openat failed");
-            return;
-        }
-        /* reopen as a real file handle, now owns bfd */
-        auto *f = fdopen(bfd, "w");
-        if (!f) {
-            perror("dinit: fopen failed");
-            return;
-        }
-        /* write boot service */
-        std::fprintf(f, "type = internal\n");
-        /* wait for a service directory */
-        if (cdata->boot_path.data()[0] == '/') {
-            std::fprintf(f, "waits-for.d = %s\n", cdata->boot_path.data());
-        } else {
-            std::fprintf(
-                f, "waits-for.d = %s/%s\n", sess.homedir,
-                cdata->boot_path.data()
-            );
-        }
-        std::fclose(f);
-    }
-    /* build up env and args list */
-    std::vector<char> execs{};
-    std::size_t argc = 0, nexec = 0;
-    auto add_str = [&execs, &nexec](auto &&...s) {
-        (execs.insert(execs.end(), s, s + std::strlen(s)), ...);
-        execs.push_back('\0');
-        ++nexec;
-    };
-    /* argv starts here */
-    add_str("dinit");
-    add_str("--user");
-    add_str("--ready-fd");
-    add_str(pipenum);
-    add_str("--services-dir");
-    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
-    /* onwards */
-    for (auto &sp: cdata->srv_paths) {
-        add_str("--services-dir");
-        if (sp.data()[0] != '/') {
-            add_str(sess.homedir, "/", sp.data());
-        } else {
-            add_str(sp.data());
-        }
-    }
-    argc = nexec;
-    /* environment starts here */
-    add_str("HOME=", sess.homedir);
-    add_str("UID=", sess.uids);
-    add_str("GID=", sess.gids);
-    add_str("PATH=/usr/local/bin:/usr/bin:/bin");
-    if (sess.rundir[0]) {
-        add_str("XDG_RUNTIME_DIR=", sess.rundir);
-    }
-    /* make up env and arg arrays */
-    std::vector<char const *> argp{};
-    {
-        char const *execsp = execs.data();
-        argp.reserve(nexec + 2);
-        for (std::size_t i = 0; i < argc; ++i) {
-            argp.push_back(execsp);
-            execsp += std::strlen(execsp) + 1;
-        }
-        argp.push_back(nullptr);
-        for (std::size_t i = argc; i < nexec; ++i) {
-            argp.push_back(execsp);
-            execsp += std::strlen(execsp) + 1;
-        }
-        argp.push_back(nullptr);
-    }
-    auto *argv = const_cast<char **>(&argp[0]);
-    /* restore umask to user default */
-    umask(022);
-    /* fire */
-    execvpe("dinit", argv, argv + argc + 1);
-}
 
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
@@ -325,74 +145,6 @@ static bool dinit_start(session &sess) {
     close(dpipe[1]);
     sess.dinit_pid = pid;
     sess.userpipe = pfd.fd;
-    return true;
-}
-
-/* this is called upon receiving a SIGCHLD
- *
- * can happen for 3 things:
- *
- * the dinit instance which is still supposed to be running, in which case
- * we attempt to restart it (except if it never signaled readiness, in which
- * case we give up, as we'd likely loop forever)
- *
- * the dinitctl start job, which waits for the bootup to finish, and is run
- * once dinit has opened its control socket; in those cases we notify all
- * pending connections and disarm the timeout (and mark the session ready)
- *
- * or the dinit instance which has stopped (due to logout typically), in
- * which case we take care of removing the generated service directory and
- * possibly clear the rundir (if managed)
- */
-static bool dinit_reaper(pid_t pid) {
-    print_dbg("dinit: check for restarts");
-    for (auto &sess: sessions) {
-        if (pid == sess.dinit_pid) {
-            sess.dinit_pid = -1;
-            sess.start_pid = -1; /* we don't care anymore */
-            if (sess.dinit_wait) {
-                /* failed without ever having signaled readiness
-                 * this indicates that we'd probably just loop forever,
-                 * so bail out
-                 */
-                 print_err("dinit: died without notifying readiness");
-                 return false;
-            }
-            return dinit_start(sess);
-        } else if (pid == sess.start_pid) {
-            /* reaping service startup jobs */
-            print_dbg("dinit: ready notification");
-            unsigned int msg = MSG_OK_DONE;
-            for (auto c: sess.conns) {
-                if (send(c, &msg, sizeof(msg), 0) < 0) {
-                    print_err("conn: send failed (%s)", strerror(errno));
-                }
-            }
-            /* disarm an associated timer */
-            print_dbg("dinit: disarm timer");
-            for (
-                auto it = timers.begin(); it != timers.end(); ++it
-            ) {
-                if (it->uid == sess.uid) {
-                    timer_delete(it->timer);
-                    timers.erase(it);
-                    break;
-                }
-            }
-            sess.start_pid = -1;
-            sess.dinit_wait = false;
-        } else if (pid == sess.term_pid) {
-            if (dir_clear_contents(sess.dirfd)) {
-                sess.remove_sdir();
-            }
-            /* clear rundir if needed */
-            if (sess.manage_rdir) {
-                rundir_clear(sess.rundir);
-                sess.manage_rdir = false;
-            }
-            sess.term_pid = -1;
-        }
-    }
     return true;
 }
 
@@ -787,6 +539,74 @@ static bool sig_handle_alrm() {
     print_dbg("userservd: drop timer");
     timer_delete(tm.timer);
     timers.erase(timers.begin());
+    return true;
+}
+
+/* this is called upon receiving a SIGCHLD
+ *
+ * can happen for 3 things:
+ *
+ * the dinit instance which is still supposed to be running, in which case
+ * we attempt to restart it (except if it never signaled readiness, in which
+ * case we give up, as we'd likely loop forever)
+ *
+ * the dinitctl start job, which waits for the bootup to finish, and is run
+ * once dinit has opened its control socket; in those cases we notify all
+ * pending connections and disarm the timeout (and mark the session ready)
+ *
+ * or the dinit instance which has stopped (due to logout typically), in
+ * which case we take care of removing the generated service directory and
+ * possibly clear the rundir (if managed)
+ */
+static bool dinit_reaper(pid_t pid) {
+    print_dbg("dinit: check for restarts");
+    for (auto &sess: sessions) {
+        if (pid == sess.dinit_pid) {
+            sess.dinit_pid = -1;
+            sess.start_pid = -1; /* we don't care anymore */
+            if (sess.dinit_wait) {
+                /* failed without ever having signaled readiness
+                 * this indicates that we'd probably just loop forever,
+                 * so bail out
+                 */
+                 print_err("dinit: died without notifying readiness");
+                 return false;
+            }
+            return dinit_start(sess);
+        } else if (pid == sess.start_pid) {
+            /* reaping service startup jobs */
+            print_dbg("dinit: ready notification");
+            unsigned int msg = MSG_OK_DONE;
+            for (auto c: sess.conns) {
+                if (send(c, &msg, sizeof(msg), 0) < 0) {
+                    print_err("conn: send failed (%s)", strerror(errno));
+                }
+            }
+            /* disarm an associated timer */
+            print_dbg("dinit: disarm timer");
+            for (
+                auto it = timers.begin(); it != timers.end(); ++it
+            ) {
+                if (it->uid == sess.uid) {
+                    timer_delete(it->timer);
+                    timers.erase(it);
+                    break;
+                }
+            }
+            sess.start_pid = -1;
+            sess.dinit_wait = false;
+        } else if (pid == sess.term_pid) {
+            if (dir_clear_contents(sess.dirfd)) {
+                sess.remove_sdir();
+            }
+            /* clear rundir if needed */
+            if (sess.manage_rdir) {
+                rundir_clear(sess.rundir);
+                sess.manage_rdir = false;
+            }
+            sess.term_pid = -1;
+        }
+    }
     return true;
 }
 
