@@ -11,26 +11,20 @@
 #define _GNU_SOURCE /* accept4 */
 #endif
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cstddef>
 #include <cerrno>
 #include <cassert>
 #include <climits>
 #include <cctype>
 #include <ctime>
-#include <vector>
-#include <string>
 #include <algorithm>
 
-#include <syslog.h>
 #include <pwd.h>
 #include <grp.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <dirent.h>
 #include <unistd.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -39,6 +33,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "dinit-userservd.hh"
 #include "protocol.hh"
 
 #ifndef CONF_PATH
@@ -47,29 +42,11 @@
 
 #define DEFAULT_CFG_PATH CONF_PATH "/dinit-userservd.conf"
 
-struct cfg_data {
-    time_t dinit_timeout = 60;
-    bool debug = false;
-    bool debug_stderr = false;
-    bool manage_rdir = false;
-    bool export_dbus = true;
-    std::string rdir_path = RUN_PATH "/user/%u";
-    std::string boot_path = ".config/dinit.d/boot.d";
-    std::vector<std::string> srv_paths{};
-};
-
-static cfg_data cdata;
+/* global */
+cfg_data *cdata = nullptr;
 
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
-
-/* service directory paths defaults */
-static constexpr char const *servpaths[] = {
-    ".config/dinit.d",
-    "/etc/dinit.d/user",
-    "/usr/local/lib/dinit.d/user",
-    "/usr/lib/dinit.d/user",
-};
 
 /* session information: contains a list of connections (which also provide
  * a way to know when to end the session, as the connection is persistent
@@ -148,268 +125,6 @@ static int ctl_sock;
 static std::vector<pollfd> pipes;
 /* timer list */
 static std::vector<session_timer> timers;
-
-/* these are macros for a simple reason; making them functions will trigger
- * format-security warnings (even though it's technically always safe for
- * us, there is no way to bypass that portably) and making it a C-style
- * vararg function is not possible (because vsyslog is not standard)
- *
- * in a macro we just pass things through, so it's completely safe
- */
-
-#define print_dbg(...) \
-    if (cdata.debug) { \
-        if (cdata.debug_stderr) { \
-            fprintf(stderr, __VA_ARGS__); \
-            fputc('\n', stderr); \
-        } \
-        syslog(LOG_DEBUG, __VA_ARGS__); \
-    }
-
-#define print_err(...) \
-    if (cdata.debug_stderr) { \
-        fprintf(stderr, __VA_ARGS__); \
-        fputc('\n', stderr); \
-    } \
-    syslog(LOG_ERR, __VA_ARGS__);
-
-static bool expand_rundir(
-    char *dest, std::size_t destsize, char const *tmpl,
-    char const *uid, char const *gid
-) {
-    auto destleft = destsize;
-    while (*tmpl) {
-        auto mark = std::strchr(tmpl, '%');
-        if (!mark) {
-            /* no formatting mark in the rest of the string, copy all */
-            auto rlen = std::strlen(tmpl);
-            if (destleft > rlen) {
-                /* enough space incl terminating zero */
-                std::memcpy(dest, tmpl, rlen + 1);
-                return true;
-            } else {
-                /* not enough space left */
-                return false;
-            }
-        }
-        /* copy up to mark */
-        auto rlen = std::size_t(mark - tmpl);
-        if (rlen) {
-            if (destleft > rlen) {
-                std::memcpy(dest, tmpl, rlen);
-                destleft -= rlen;
-                dest += rlen;
-            } else {
-                /* not enough space left */
-                return false;
-            }
-        }
-        /* trailing % or %%, just copy it as is */
-        if (!mark[1] || ((mark[1] == '%') && !mark[2])) {
-            if (destleft > 1) {
-                *dest++ = '%';
-                *dest++ = '\0';
-                return true;
-            }
-            return false;
-        }
-        ++mark;
-        char const *wnum;
-        switch (mark[0]) {
-            case 'u':
-                wnum = uid;
-                goto writenum;
-            case 'g':
-                wnum = gid;
-writenum:
-                if (destleft <= 1) {
-                    /* not enough space */
-                    return false;
-                } else {
-                    auto nw = std::strlen(wnum);
-                    if (nw >= destleft) {
-                        return false;
-                    }
-                    std::memcpy(dest, wnum, nw);
-                    dest += nw;
-                    destleft -= nw;
-                    tmpl = mark + 1;
-                    continue;
-                }
-            case '%':
-                if (destleft > 1) {
-                    destleft -= 1;
-                    *dest++ = *mark++;
-                    tmpl = mark;
-                    continue;
-                } else {
-                    return false;
-                }
-            default:
-                /* copy as is */
-                if (destleft > 2) {
-                    destleft -= 2;
-                    *dest++ = '%';
-                    *dest++ = *mark++;
-                    tmpl = mark;
-                    continue;
-                } else {
-                    return false;
-                }
-        }
-    }
-    *dest = '\0';
-    return true;
-}
-
-static bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
-    char *sl = std::strchr(rundir + 1, '/');
-    struct stat dstat;
-    print_dbg("rundir: make directory %s", rundir);
-    /* recursively create all parent paths */
-    while (sl) {
-        *sl = '\0';
-        print_dbg("rundir: try make parent %s", rundir);
-        if (stat(rundir, &dstat) || !S_ISDIR(dstat.st_mode)) {
-            print_dbg("rundir: make parent %s", rundir);
-            if (mkdir(rundir, 0755)) {
-                print_err(
-                    "rundir: mkdir failed for path (%s)", strerror(errno)
-                );
-                return false;
-            }
-        }
-        *sl = '/';
-        sl = strchr(sl + 1, '/');
-    }
-    /* create rundir with correct permissions */
-    if (mkdir(rundir, 0700)) {
-        print_err("rundir: mkdir failed for rundir (%s)", strerror(errno));
-        return false;
-    }
-    if (chown(rundir, uid, gid) < 0) {
-        print_err("rundir: chown failed for rundir (%s)", strerror(errno));
-        rmdir(rundir);
-        return false;
-    }
-    return true;
-}
-
-static bool dir_clear_contents(int dfd) {
-    DIR *d = fdopendir(dfd);
-    if (!d) {
-        print_err("rundir: fdopendir failed (%s)", strerror(errno));
-        close(dfd);
-        return false;
-    }
-
-    unsigned char buf[offsetof(struct dirent, d_name) + NAME_MAX + 1];
-    unsigned char *bufp = buf;
-
-    struct dirent *dentb = nullptr, *dent = nullptr;
-    std::memcpy(&dentb, &bufp, sizeof(dent));
-
-    for (;;) {
-        if (readdir_r(d, dentb, &dent) < 0) {
-            print_err("rundir: readdir_r failed (%s)", strerror(errno));
-            closedir(d);
-            return false;
-        }
-        if (!dent) {
-            break;
-        }
-        if (
-            !std::strcmp(dent->d_name, ".") ||
-            !std::strcmp(dent->d_name, "..")
-        ) {
-            continue;
-        }
-
-        print_dbg("rundir: clear %s at %d", dent->d_name, dfd);
-        int efd = openat(dfd, dent->d_name, O_RDONLY);
-        if (efd < 0) {
-            print_err("rundir: openat failed (%s)", strerror(errno));
-            closedir(d);
-            return false;
-        }
-
-        struct stat st;
-        if (fstat(efd, &st) < 0) {
-            print_err("rundir: fstat failed (%s)", strerror(errno));
-            closedir(d);
-            return false;
-        }
-
-        if (S_ISDIR(st.st_mode)) {
-            if (!dir_clear_contents(efd)) {
-                closedir(d);
-                return false;
-            }
-        } else {
-            close(efd);
-        }
-
-        if (unlinkat(
-            dfd, dent->d_name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0
-        ) < 0) {
-            print_err("rundir: unlinkat failed (%s)", strerror(errno));
-            closedir(d);
-            return false;
-        }
-    }
-
-    closedir(d);
-    return true;
-}
-
-static int dir_make_at(int dfd, char const *dname, mode_t mode) {
-    int sdfd = openat(dfd, dname, O_RDONLY);
-    struct stat st;
-    if (fstat(sdfd, &st) || !S_ISDIR(st.st_mode)) {
-        close(sdfd);
-        if (mkdirat(dfd, dname, mode)) {
-            return -1;
-        }
-        sdfd = openat(dfd, dname, O_RDONLY);
-        if (fstat(sdfd, &st)) {
-            return -1;
-        }
-        if (!S_ISDIR(st.st_mode)) {
-            errno = ENOTDIR;
-            return -1;
-        }
-    } else {
-        if (fchmod(sdfd, mode)) {
-            return -1;
-        }
-        if (!dir_clear_contents(sdfd)) {
-            errno = ENOTEMPTY;
-            return -1;
-        }
-    }
-    return sdfd;
-}
-
-static void rundir_clear(char *rundir) {
-    struct stat dstat;
-    print_dbg("rundir: clear directory %s", rundir);
-    int dfd = open(rundir, O_RDONLY);
-    /* non-existent */
-    if (fstat(dfd, &dstat)) {
-        return;
-    }
-    /* not a directory */
-    if (!S_ISDIR(dstat.st_mode)) {
-        print_dbg("rundir: %s is not a directory", rundir);
-        return;
-    }
-    if (dir_clear_contents(dfd)) {
-        /* was empty */
-        rmdir(rundir);
-    } else {
-        print_dbg("rundir: failed to clear contents of %s", rundir);
-    }
-}
 
 static bool dinit_boot(session &sess) {
     print_dbg("dinit: boot wait");
@@ -490,12 +205,12 @@ static void dinit_child(session &sess, char const *pipenum) {
         /* write boot service */
         std::fprintf(f, "type = internal\n");
         /* wait for a service directory */
-        if (cdata.boot_path.data()[0] == '/') {
-            std::fprintf(f, "waits-for.d = %s\n", cdata.boot_path.data());
+        if (cdata->boot_path.data()[0] == '/') {
+            std::fprintf(f, "waits-for.d = %s\n", cdata->boot_path.data());
         } else {
             std::fprintf(
                 f, "waits-for.d = %s/%s\n", sess.homedir,
-                cdata.boot_path.data()
+                cdata->boot_path.data()
             );
         }
         std::fclose(f);
@@ -516,7 +231,7 @@ static void dinit_child(session &sess, char const *pipenum) {
     add_str("--services-dir");
     add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
     /* onwards */
-    for (auto &sp: cdata.srv_paths) {
+    for (auto &sp: cdata->srv_paths) {
         add_str("--services-dir");
         if (sp.data()[0] != '/') {
             add_str(sess.homedir, "/", sp.data());
@@ -571,7 +286,7 @@ static bool dinit_start(session &sess) {
     pfd.events = POLLIN | POLLHUP;
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
-    if (cdata.dinit_timeout > 0) {
+    if (cdata->dinit_timeout > 0) {
         auto &tm = timers.emplace_back();
         tm.uid = sess.uid;
         tm.sev.sigev_notify = SIGEV_SIGNAL;
@@ -584,7 +299,7 @@ static bool dinit_start(session &sess) {
         }
         /* arm timer, drop if it fails */
         itimerspec tval{};
-        tval.it_value.tv_sec = cdata.dinit_timeout;
+        tval.it_value.tv_sec = cdata->dinit_timeout;
         if (timer_settime(tm.timer, 0, &tval, nullptr) < 0) {
             print_err("dinit: timer_settime failed (%s)", strerror(errno));
             timer_delete(tm.timer);
@@ -788,14 +503,14 @@ static bool handle_session_new(
         }
     }
     std::memset(sess->rundir, 0, sizeof(sess->rundir));
-    if (!expand_rundir(
-        sess->rundir, sizeof(sess->rundir), cdata.rdir_path.data(),
+    if (!cfg_expand_rundir(
+        sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
         sess->uids, sess->gids
     )) {
         print_dbg("msg: failed to expand rundir for %u", it.uid);
         return false;
     }
-    if (cdata.manage_rdir) {
+    if (cdata->manage_rdir) {
         print_dbg("msg: setup rundir for %u", it.uid);
         if (!rundir_make(sess->rundir, it.uid, it.gid)) {
             return false;
@@ -833,7 +548,7 @@ static bool handle_session_new(
     sess->gid = it.gid;
     std::free(sess->homedir);
     sess->homedir = it.homedir;
-    sess->manage_rdir = cdata.manage_rdir;
+    sess->manage_rdir = cdata->manage_rdir;
     it.homedir = nullptr;
     done = true;
     /* reply */
@@ -892,7 +607,7 @@ static bool handle_read(int fd) {
                 return msg_send(fd, MSG_DATA);
             }
             auto rlen = std::strlen(sess->rundir);
-            if (cdata.manage_rdir) {
+            if (cdata->manage_rdir) {
                 return msg_send(fd, MSG_ENCODE(rlen + DIRLEN_MAX));
             } else {
                 return msg_send(fd, MSG_ENCODE(rlen));
@@ -1042,20 +757,6 @@ fail:
     unlink(path);
     close(sock);
     return false;
-}
-
-static void read_bool(char const *name, char const *value, bool &val) {
-    if (!std::strcmp(value, "yes")) {
-        val = true;
-    } else if (!std::strcmp(value, "no")) {
-        val = false;
-    } else {
-        syslog(
-            LOG_WARNING,
-            "Invalid configuration value '%s' for '%s' (expected yes/no)",
-            value, name
-        );
-    }
 }
 
 static bool sig_handle_alrm() {
@@ -1208,94 +909,6 @@ static void sock_handle_conn() {
     }
 }
 
-static void read_cfg(char const *cfgpath) {
-    char buf[DIRLEN_MAX];
-
-    auto *f = std::fopen(cfgpath, "r");
-    if (!f) {
-        syslog(
-            LOG_NOTICE, "No configuration file '%s', using defaults", cfgpath
-        );
-        return;
-    }
-
-    while (std::fgets(buf, DIRLEN_MAX, f)) {
-        auto slen = strlen(buf);
-        /* ditch the rest of the line if needed */
-        if ((buf[slen - 1] != '\n')) {
-            while (!std::feof(f)) {
-                auto c = std::fgetc(f);
-                if (c == '\n') {
-                    std::fgetc(f);
-                    break;
-                }
-            }
-        }
-        char *bufp = buf;
-        /* drop trailing whitespace */
-        while (std::isspace(bufp[slen - 1])) {
-            bufp[--slen] = '\0';
-        }
-        /* drop leading whitespace */
-        while (std::isspace(*bufp)) {
-            ++bufp;
-        }
-        /* comment or empty line */
-        if (!*bufp || (*bufp == '#')) {
-            continue;
-        }
-        /* find the assignment */
-        char *ass = strchr(bufp, '=');
-        /* invalid */
-        if (!ass || (ass == bufp)) {
-            syslog(LOG_WARNING, "Malformed configuration line: %s", bufp);
-            continue;
-        }
-        *ass = '\0';
-        /* find the name */
-        char *preass = (ass - 1);
-        while (std::isspace(*preass)) {
-            *preass-- = '\0';
-        }
-        /* empty name */
-        if (preass == bufp) {
-            syslog(LOG_WARNING, "Invalud configuration line name: %s", bufp);
-            continue;
-        }
-        /* find the value */
-        while (std::isspace(*++ass)) {
-            continue;
-        }
-        /* supported config lines */
-        if (!std::strcmp(bufp, "debug")) {
-            read_bool("debug", ass, cdata.debug);
-        } else if (!std::strcmp(bufp, "debug_stderr")) {
-            read_bool("debug_stderr", ass, cdata.debug_stderr);
-        } else if (!std::strcmp(bufp, "manage_rundir")) {
-            read_bool("manage_rundir", ass, cdata.manage_rdir);
-        } else if (!std::strcmp(bufp, "export_dbus_address")) {
-            read_bool("export_dbus_address", ass, cdata.export_dbus);
-        } else if (!std::strcmp(bufp, "rundir_path")) {
-            cdata.rdir_path = ass;
-        } else if (!std::strcmp(bufp, "login_timeout")) {
-            char *endp = nullptr;
-            auto tout = std::strtoul(ass, &endp, 10);
-            if (*endp || (endp == ass)) {
-                syslog(
-                    LOG_WARNING,
-                    "Invalid config value '%lu' for '%s' (expected integer)"
-                );
-            } else {
-                cdata.dinit_timeout = time_t(tout);
-            }
-        } else if (!std::strcmp(bufp, "boot_dir")) {
-            cdata.boot_path = ass;
-        } else if (!std::strcmp(bufp, "services_dir")) {
-            cdata.srv_paths.push_back(ass);
-        }
-    }
-}
-
 int main(int argc, char **argv) {
     if (signal(SIGCHLD, sighandler) == SIG_ERR) {
         perror("signal failed");
@@ -1315,18 +928,14 @@ int main(int argc, char **argv) {
 
     syslog(LOG_INFO, "Initializing dinit-userservd...");
 
-    if (argc >= 2) {
-        read_cfg(argv[1]);
-    } else {
-        read_cfg(DEFAULT_CFG_PATH);
-    }
+    /* initialize configuration structure */
+    cfg_data cdata_val;
+    cdata = &cdata_val;
 
-    /* default service paths if needed */
-    if (cdata.srv_paths.empty()) {
-        auto npaths = sizeof(servpaths) / sizeof(*servpaths);
-        for (std::size_t i = 0; i < npaths; ++i) {
-            cdata.srv_paths.push_back(servpaths[i]);
-        }
+    if (argc >= 2) {
+        cfg_read(argv[1]);
+    } else {
+        cfg_read(DEFAULT_CFG_PATH);
     }
 
     print_dbg("userservd: init signal fd");

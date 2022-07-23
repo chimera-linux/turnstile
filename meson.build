@@ -24,8 +24,14 @@ configure_file(output: 'config.hh', configuration: conf_data)
 
 extra_inc = [include_directories('.')]
 
+daemon_sources = [
+    'dinit-userservd.cc',
+    'fs_utils.cc',
+    'cfg_utils.cc',
+]
+
 daemon = executable(
-    'dinit-userservd', 'dinit-userservd.cc',
+    'dinit-userservd', daemon_sources,
     include_directories: extra_inc,
     install: true,
     dependencies: [rt_dep],
