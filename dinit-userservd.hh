@@ -55,6 +55,8 @@ struct session {
     bool timer_armed = false;
     /* whether a SIGKILL was attempted */
     bool kill_tried = false;
+    /* whether a pipe is queued */
+    bool pipe_queued = false;
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
     /* dinit control socket path, read off userpipe */

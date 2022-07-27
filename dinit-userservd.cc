@@ -115,8 +115,6 @@ static std::vector<pending_conn> pending_conns;
 static std::vector<pollfd> fds;
 /* control IPC socket */
 static int ctl_sock;
-/* requests for new pipes; picked up by the event loop and cleared */
-static std::vector<pollfd> pipes;
 
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
@@ -164,9 +162,6 @@ static bool dinit_start(session &sess) {
         print_err("dinit: pipe failed (%s)", strerror(errno));
         return false;
     }
-    auto &pfd = pipes.emplace_back();
-    pfd.fd = dpipe[0];
-    pfd.events = POLLIN | POLLHUP;
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("dinit: timer set");
     if (cdata->dinit_timeout > 0) {
@@ -192,7 +187,8 @@ static bool dinit_start(session &sess) {
     close(dpipe[1]);
     sess.dinit_pending = false;
     sess.dinit_pid = pid;
-    sess.userpipe = pfd.fd;
+    sess.userpipe = dpipe[0];
+    sess.pipe_queued = true;
     return true;
 }
 
@@ -714,6 +710,7 @@ static bool fd_handle_pipe(std::size_t i, bool &do_break) {
         /* kill the pipe, we don't need it anymore */
         close(sess->userpipe);
         sess->userpipe = -1;
+        sess->pipe_queued = false;
         fds[i].fd = -1;
         fds[i].revents = 0;
         /* but error early if needed */
@@ -774,6 +771,7 @@ static void sock_handle_conn() {
         auto &rfd = fds.emplace_back();
         rfd.fd = afd;
         rfd.events = POLLIN | POLLHUP;
+        rfd.revents = 0;
         print_dbg("conn: accepted %d for %d", afd, fds[1].fd);
     }
 }
@@ -800,7 +798,6 @@ int main(int argc, char **argv) {
     pending_conns.reserve(8);
     sessions.reserve(16);
     fds.reserve(64);
-    pipes.reserve(8);
 
     openlog("dinit-userservd", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
@@ -850,6 +847,7 @@ int main(int argc, char **argv) {
         auto &pfd = fds.emplace_back();
         pfd.fd = sigpipe[0];
         pfd.events = POLLIN;
+        pfd.revents = 0;
     }
 
     print_dbg("userservd: init control socket");
@@ -862,6 +860,7 @@ int main(int argc, char **argv) {
         auto &pfd = fds.emplace_back();
         pfd.fd = ctl_sock;
         pfd.events = POLLIN;
+        pfd.revents = 0;
     }
 
     print_dbg("userservd: main loop");
@@ -929,9 +928,15 @@ do_compact:
             }
         }
         /* queue pipes after control socket */
-        if (!pipes.empty()) {
-            fds.insert(fds.begin() + 2, pipes.begin(), pipes.end());
-            pipes.clear();
+        for (auto &sess: sessions) {
+            if (!sess.pipe_queued) {
+                continue;
+            }
+            pollfd pfd;
+            pfd.fd = sess.userpipe;
+            pfd.events = POLLIN | POLLHUP;
+            pfd.revents = 0;
+            fds.insert(fds.begin() + 2, pfd);
         }
     }
     for (auto &fd: fds) {
