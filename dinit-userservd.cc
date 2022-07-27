@@ -113,6 +113,8 @@ static std::vector<pending_conn> pending_conns;
 
 /* file descriptors for poll */
 static std::vector<pollfd> fds;
+/* number of pipes we are polling on */
+static std::size_t npipes = 0;
 /* control IPC socket */
 static int ctl_sock;
 
@@ -674,7 +676,7 @@ static bool sig_handle_chld() {
     return true;
 }
 
-static bool fd_handle_pipe(std::size_t i, bool &do_break) {
+static bool fd_handle_pipe(std::size_t i) {
     if (fds[i].revents == 0) {
         return true;
     }
@@ -687,8 +689,8 @@ static bool fd_handle_pipe(std::size_t i, bool &do_break) {
         }
     }
     if (!sess) {
-        do_break = true;
-        return true;
+        /* this should never happen */
+        return false;
     }
     if (fds[i].revents & POLLIN) {
         auto *endp = &sess->csock[sizeof(sess->csock) - 1];
@@ -713,6 +715,7 @@ static bool fd_handle_pipe(std::size_t i, bool &do_break) {
         sess->pipe_queued = false;
         fds[i].fd = -1;
         fds[i].revents = 0;
+        --npipes;
         /* but error early if needed */
         if (!sess->csock[0]) {
             print_err("read failed (%s)", strerror(errno));
@@ -865,7 +868,7 @@ int main(int argc, char **argv) {
 
     print_dbg("userservd: main loop");
 
-    std::size_t i = 0;
+    std::size_t i = 0, curpipes;
 
     /* main loop */
     for (;;) {
@@ -902,14 +905,11 @@ int main(int argc, char **argv) {
 signal_done:
         /* check incoming connections on control socket */
         sock_handle_conn();
-        /* check on pipes */
-        for (i = 2; i < fds.size(); ++i) {
-            bool do_break = false;
-            if (!fd_handle_pipe(i, do_break)) {
+        /* check on pipes; npipes may be changed by fd_handle_pipe */
+        curpipes = npipes;
+        for (i = 2; i < (curpipes + 2); ++i) {
+            if (!fd_handle_pipe(i)) {
                 return 1;
-            }
-            if (do_break) {
-                break;
             }
         }
         /* check on connections */
@@ -936,7 +936,9 @@ do_compact:
             pfd.fd = sess.userpipe;
             pfd.events = POLLIN | POLLHUP;
             pfd.revents = 0;
+            /* insert in the pipe area so they are polled before conns */
             fds.insert(fds.begin() + 2, pfd);
+            ++npipes;
         }
     }
     for (auto &fd: fds) {
