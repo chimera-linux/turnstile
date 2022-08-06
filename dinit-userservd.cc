@@ -712,6 +712,7 @@ static bool fd_handle_pipe(std::size_t i) {
         /* kill the pipe, we don't need it anymore */
         close(sess->userpipe);
         sess->userpipe = -1;
+        /* just in case */
         sess->pipe_queued = false;
         fds[i].fd = -1;
         fds[i].revents = 0;
@@ -938,6 +939,8 @@ do_compact:
             pfd.revents = 0;
             /* insert in the pipe area so they are polled before conns */
             fds.insert(fds.begin() + 2, pfd);
+            /* ensure it's not re-queued again */
+            sess.pipe_queued = false;
             ++npipes;
         }
     }
