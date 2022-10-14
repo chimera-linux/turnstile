@@ -8,13 +8,12 @@ This is a daemon and a PAM module to handle user services management with the
 `dinit` init system and service manager (https://github.com/davmac314/dinit).
 
 It was created chiefly for the needs of the Chimera Linux project and may not
-work properly elsewhere. It may depend on bleeding edge Git versions of `dinit`.
-Issues or feature requests specific to other environments will not be addressed.
-Patches are welcome (provided they are not disruptive or introduce excessive
-complexity) and if you believe your particular problem is not specific to your
-system, feel free to report it.
+work properly elsewhere. Issues or feature requests specific to other environments
+will not be addressed. Patches are welcome (provided they are not disruptive or
+introduce excessive complexity) and if you believe your particular problem is
+not specific to your system, feel free to report it.
 
-**Required `dinit` version:** at least Git `be98fa3d3a87b05bb23ee5c9b9a0ecf3cb165c14`
+**Requires `dinit` 0.16.0 or newer.**
 
 ## How it works
 
