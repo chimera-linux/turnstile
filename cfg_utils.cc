@@ -70,7 +70,7 @@ void cfg_read(char const *cfgpath) {
         }
         /* empty name */
         if (preass == bufp) {
-            syslog(LOG_WARNING, "Invalud configuration line name: %s", bufp);
+            syslog(LOG_WARNING, "Invalid configuration line name: %s", bufp);
             continue;
         }
         /* find the value */
@@ -94,13 +94,22 @@ void cfg_read(char const *cfgpath) {
             if (*endp || (endp == ass)) {
                 syslog(
                     LOG_WARNING,
-                    "Invalid config value '%lu' for '%s' (expected integer)"
+                    "Invalid config value '%s' for '%s' (expected integer)",
+                    ass, bufp
                 );
             } else {
                 cdata->dinit_timeout = time_t(tout);
             }
         } else if (!std::strcmp(bufp, "boot_dir")) {
-            cdata->boot_path = ass;
+            if (ass[0] == '/') {
+                syslog(
+                    LOG_WARNING,
+                    "Invalid config value '%s' for '%s' (must be relative)",
+                    ass, bufp
+                );
+            } else {
+                cdata->boot_path = ass;
+            }
         } else if (!std::strcmp(bufp, "services_dir")) {
             cdata->srv_paths.push_back(ass);
         }

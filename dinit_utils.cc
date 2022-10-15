@@ -87,14 +87,10 @@ void dinit_child(session &sess, char const *pipenum) {
         /* write boot service */
         std::fprintf(f, "type = internal\n");
         /* wait for a service directory */
-        if (cdata->boot_path.data()[0] == '/') {
-            std::fprintf(f, "waits-for.d = %s\n", cdata->boot_path.data());
-        } else {
-            std::fprintf(
-                f, "waits-for.d = %s/%s\n", sess.homedir,
-                cdata->boot_path.data()
-            );
-        }
+        std::fprintf(
+            f, "waits-for.d = %s/%s\n", sess.homedir,
+            cdata->boot_path.data()
+        );
         std::fclose(f);
     }
     /* build up env and args list */
