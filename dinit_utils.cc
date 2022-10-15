@@ -93,6 +93,32 @@ void dinit_child(session &sess, char const *pipenum) {
         );
         std::fclose(f);
     }
+    /* create boot path, if possible; if it fails, it fails (harmless-ish) */
+    int hfd = open(sess.homedir, O_RDONLY);
+    if (struct stat hstat; !fstat(hfd, &hstat) && S_ISDIR(hstat.st_mode)) {
+        char *bptr = &cdata->boot_path[0];
+        /* boot dir already exists */
+        if (!fstatat(hfd, bptr, &hstat, 0) && S_ISDIR(hstat.st_mode)) {
+            goto bdir_done;
+        }
+        /* otherwise recursively create it */
+        char *sl = std::strchr(bptr, '/');
+        while (sl) {
+            *sl = '\0';
+            if (fstatat(hfd, bptr, &hstat, 0) || !S_ISDIR(hstat.st_mode)) {
+                if (mkdirat(hfd, bptr, 0755)) {
+                    *sl = '/';
+                    goto bdir_done;
+                }
+            }
+            *sl = '/';
+            sl = strchr(sl + 1, '/');
+        }
+        /* actually create the dir itself */
+        mkdirat(hfd, bptr, 0755);
+    }
+bdir_done:
+    close(hfd);
     /* build up env and args list */
     std::vector<char> execs{};
     std::size_t argc = 0, nexec = 0;
