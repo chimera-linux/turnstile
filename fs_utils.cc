@@ -93,6 +93,10 @@ void rundir_clear(char *rundir) {
 }
 
 bool dir_clear_contents(int dfd) {
+    if (dfd < 0) {
+        /* silently return if an invalid file descriptor */
+        return false;
+    }
     DIR *d = fdopendir(dfd);
     if (!d) {
         print_err("rundir: fdopendir failed (%s)", strerror(errno));

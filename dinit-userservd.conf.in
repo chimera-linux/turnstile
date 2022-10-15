@@ -20,6 +20,15 @@
 #
 debug = no
 
+# Whether to disable user service handling. If set to yes
+# no dinit instances will be spawned, but the daemon will
+# still perform login tracking and auxiliary tasks such
+# as rundir management.
+#
+# Valid values are 'yes' and 'no'.
+#
+disable = no
+
 # Whether to print debug messages also to stderr.
 #
 # Valid values are 'yes' and 'no'.

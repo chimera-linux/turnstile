@@ -8,7 +8,7 @@
 
 #include "dinit-userservd.hh"
 
-bool dinit_boot(session &sess) {
+bool dinit_boot(session &sess, bool disabled) {
     print_dbg("dinit: boot wait");
     auto pid = fork();
     if (pid < 0) {
@@ -19,6 +19,11 @@ bool dinit_boot(session &sess) {
     if (pid != 0) {
         /* parent process */
         sess.start_pid = pid;
+        return true;
+    }
+    if (disabled) {
+        /* if dinit is not managed, simply succeed immediately */
+        exit(0);
         return true;
     }
     /* child process */

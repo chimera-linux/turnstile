@@ -87,11 +87,12 @@ void cfg_populate_srvdirs();
 
 /* dinit utilities */
 void dinit_child(session &sess, char const *pipenum);
-bool dinit_boot(session &sess);
+bool dinit_boot(session &sess, bool disabled);
 
 struct cfg_data {
     time_t dinit_timeout = 60;
     bool debug = false;
+    bool disable = false;
     bool debug_stderr = false;
     bool manage_rdir = false;
     bool export_dbus = true;

@@ -118,6 +118,26 @@ static std::size_t npipes = 0;
 /* control IPC socket */
 static int ctl_sock;
 
+/* dummy "dinit" child process if disabled */
+static void dinit_dummy(int pipew) {
+    /* we're always ready, the dummy process just sleeps forever */
+    if (write(pipew, "poke", 5) != 5) {
+        perror("dummy: failed to poke the pipe");
+        return;
+    }
+    close(pipew);
+    /* block all signals except the ones we need to terminate */
+    sigset_t mask;
+    sigfillset(&mask);
+    /* kill/stop are ignored, but term is not */
+    sigdelset(&mask, SIGTERM);
+    sigprocmask(SIG_SETMASK, &mask, nullptr);
+    /* this will sleep until a termination signal wakes it */
+    pause();
+    /* in which case just exit */
+    exit(0);
+}
+
 /* start the dinit instance for a session */
 static bool dinit_start(session &sess) {
     int dpipe[2];
@@ -133,9 +153,9 @@ static bool dinit_start(session &sess) {
             return false;
         }
     }
-    print_dbg("dinit: create session dir for %u", sess.uid);
     /* set up session dir */
-    {
+    if (!cdata->disable) {
+        print_dbg("dinit: create session dir for %u", sess.uid);
         /* make the directory itself */
         sess.dirfd = dir_make_at(userv_dirfd, sess.uids, 0700);
         if (sess.dirfd < 0) {
@@ -177,6 +197,10 @@ static bool dinit_start(session &sess) {
     print_dbg("dinit: launch");
     auto pid = fork();
     if (pid == 0) {
+        if (cdata->disable) {
+            dinit_dummy(dpipe[1]);
+            exit(1);
+        }
         char pipestr[32];
         std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe[1]);
         dinit_child(sess, pipestr);
@@ -723,7 +747,7 @@ static bool fd_handle_pipe(std::size_t i) {
             return true;
         }
         /* wait for the boot service to come up */
-        if (!dinit_boot(*sess)) {
+        if (!dinit_boot(*sess, cdata->disable)) {
             /* this is an unrecoverable condition */
             return false;
         }

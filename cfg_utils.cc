@@ -80,6 +80,8 @@ void cfg_read(char const *cfgpath) {
         /* supported config lines */
         if (!std::strcmp(bufp, "debug")) {
             read_bool("debug", ass, cdata->debug);
+        } else if (!std::strcmp(bufp, "disable")) {
+            read_bool("disable", ass, cdata->disable);
         } else if (!std::strcmp(bufp, "debug_stderr")) {
             read_bool("debug_stderr", ass, cdata->debug_stderr);
         } else if (!std::strcmp(bufp, "manage_rundir")) {
