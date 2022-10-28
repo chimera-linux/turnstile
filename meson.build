@@ -1,7 +1,7 @@
 project(
     'dinit-userservd',
     ['cpp'],
-    version: '0.1.0',
+    version: '0.90.0',
     default_options: [
         'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
         'cpp_eh=none', 'cpp_rtti=false',
@@ -22,13 +22,13 @@ conf_data.set_quoted('CONF_PATH', join_paths(
 
 configure_file(output: 'config.hh', configuration: conf_data)
 
-extra_inc = [include_directories('.')]
+extra_inc = [include_directories('src')]
 
 daemon_sources = [
-    'dinit-userservd.cc',
-    'fs_utils.cc',
-    'cfg_utils.cc',
-    'dinit_utils.cc',
+    'src/dinit-userservd.cc',
+    'src/fs_utils.cc',
+    'src/cfg_utils.cc',
+    'src/dinit_utils.cc',
 ]
 
 daemon = executable(
@@ -40,7 +40,7 @@ daemon = executable(
 )
 
 pam_mod = shared_module(
-    'pam_dinit_userservd', 'pam_dinit_userservd.cc',
+    'pam_dinit_userservd', 'src/pam_dinit_userservd.cc',
     include_directories: extra_inc,
     install: true,
     install_dir: join_paths(get_option('libdir'), 'security'),

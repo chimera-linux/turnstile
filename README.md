@@ -1,104 +1,122 @@
 # dinit-userservd
 
-**Note: this is currently an experimental project.** It may work, but there
-are no releases and no kitten lives are guaranteed yet. The code is being
-cleaned up and improved, and there will be a release once stable.
+v0.90.0 (pre-alpha release)
 
 This is a daemon and a PAM module to handle user services management with the
 `dinit` init system and service manager (https://github.com/davmac314/dinit).
 
-It was created chiefly for the needs of the Chimera Linux project and may not
-work properly elsewhere. Issues or feature requests specific to other environments
-will not be addressed. Patches are welcome (provided they are not disruptive or
-introduce excessive complexity) and if you believe your particular problem is
-not specific to your system, feel free to report it.
+It was created for the needs of the Chimera Linux project. Environments that
+are significantly different from Chimera's may experience problems and are not
+officially supported; feature requests related to such environments will not
+be addressed.
 
-**Requires `dinit` 0.16.0 or newer.**
+Community patches addressing such features are welcome, provided they are not
+disruptive and/or introduce excessive complexity.
 
-## How it works
+## Purpose
 
-The project consists of a daemon and a PAM module. The PAM module is enabled
-for example by adding this in your login path:
+As the name implies, the purpose of the project is to provide convenient
+handling of user services. There are many things one might want to manage
+through user services. This includes for instance the D-Bus session bus
+or a sound server.
+
+Thanks to the project, one can have user services that are automatically
+spawned upon first login and shut down upon last logout. It also takes
+care of some extra adjacent functionality that is handy to have.
+
+## Setup
+
+Build and install the project. It uses [Meson](https://mesonbuild.com/) and
+follows the standard Meson workflow. Example:
+
+```
+$ mkdir build && cd build
+$ meson .. --prefix=/usr
+$ ninja all
+$ sudo ninja install
+```
+
+The dependencies are:
+
+1) A POSIX-compliant OS (Chimera Linux is the reference platform)
+2) A C++17 compiler
+3) Meson and Ninja (to build)
+4) Dinit (**version 0.16.0 or newer**, older versions will not work)
+5) PAM
+
+The system consists of two parts:
+
+1) The daemon `dinit-userservd`
+2) The PAM module `pam_dinit_userservd.so`
+
+The PAM module needs to be enabled in your login path. This will differ in
+every distribution. Generally you need something like this:
 
 ```
 session optional pam_dinit_userservd.so
 ```
 
-The daemon must simply be running in some way. If it is not running, you will
-still be able to log in with the above setup, but it will not do anything.
+The daemon needs to be running as superuser when logins happen. The easiest
+way to do so is through a system Dinit service. The project already installs
+an example service (which works on Chimera Linux).
 
-A recommended way to manage the daemon is using a `dinit` service that is
-provided with the project.
+## How it works
 
-The daemon opens a control socket. The PAM module will make connections to
-it upon session start (and close it upon session end). When the daemon
-receives a connection, it will negotiate a session with the PAM module
-and upon first login of each user, spawn a user `dinit` instance.
+The `dinit-userservd` daemon manages sessions. A session is a set of logins
+of a specific user. Upon first login in a session, the daemon spawns a user
+instance of Dinit. Upon last logout in a session, the instance is stopped.
+The instance is supervised by the daemon and does not have access to any
+of the specific login environment (being shared between logins).
 
-This instance is supervised, if it fails in any way it gets automatically
-restarted. It runs outside of the login itself, as only one instance must
-exist per user (who can have multiple logins) and it only exists once the
-last login has logged out. This means that environment variables of the
-login do not exist within the user instance by default, and they must be
-exported into it through other means.
+The login will not proceed until all user services have started or until
+a timeout has occured (configurable). This user instance will have an
+implicit `boot` service, which will wait for all services in the user's
+`boot.d` (or another path depending on configuration) to start. If the
+`boot.d` does not exist, it will first be created before starting the
+user Dinit.
 
-It will register the following service directories:
+The daemon is notified of logins and logouts through the PAM module. The
+daemon opens a control socket upon startup; when a user logs in and the PAM
+module kicks in, it opens a connection to this socket and this connection
+is kept until the user has logged out. This socket is only accessible to
+superuser and uses a simple internal protocol to talk to the PAM module.
 
-* `~/.config/dinit.d`
-* `/etc/dinit.d/user`
-* `/usr/local/lib/dinit.d/user`
-* `/usr/lib/dinit.d/user`
+The behavior of the daemon is configurable through the `dinit-userservd.conf`
+configuration file. The PAM module is not configurable in any way.
 
-You do not need to provide a `boot` service (in fact, you should not).
-By default, the following path is used for autostarted user services:
+Some of the configuration options include debug logging, custom directories
+where user services are located and so on. There is also some auxiliary
+functionality:
 
-* `~/.config/dinit.d/boot.d`
+### Rundir management
 
-Simply drop symlinks to whatever services you want in there and they will
-get started with your login.
+The daemon relies on the `XDG_RUNTIME_DIR` functionality and exports the env
+variable into the service activation environment. The path is specified in
+the configuration file and tends to be something like `/run/user/$UID`.
 
-The login proceeds once the `dinit` instance has signaled readiness (which
-is once it has started its autostart services). It does so via an internal
-notification mechanism.
+By default, it relies on something else to manage the directory. Typically
+this is something like `elogind`.
 
-### Configuration file
+However, it can also manage the directory by itself, in environments that
+do not have anything else to manage it. This is disabled by default and
+needs to be manually enabled in the configuration file.
 
-By default, a configuration file `dinit-userservd.conf` is read from `/etc`.
-You can pass your own path on the command line as its first argument.
+When the daemon manages the directory, the environment variable is also
+exported into the login environment in addition to the activation environment.
 
-See the supplied `dinit-userservd.conf` for possible options.
+### D-Bus session bus handling
 
-### XDG_RUNTIME_DIR handling
+When using user services to manage your D-Bus session bus, you will have just
+one session bus running for all logins of the user, and its socket path will
+typically be `$XDG_RUNTIME_DIR/bus`.
 
-Usually, `XDG_RUNTIME_DIR` is managed by another daemon, typically `elogind`
-for Chimera. However, some people may not be running `elogind` or a similar
-solution. The daemon is capable of managing the runtime directory for you
-if you enable it.
+By default, if this socket exists by the time the user services have started,
+the `DBUS_SESSION_BUS_ADDRESS` environment variable will be exported into
+the login environment by the PAM module, pointing to the correct socket.
 
-By default, `XDG_RUNTIME_DIR` is exported into the user service environment
-regardless of if managed or not.
+This can be disabled if desired. Note that if the socket does not exist,
+nothing is exported.
 
-Both options can be tweaked in the configuration file.
-
-### Dbus handling
-
-The daemon also supports handling of D-Bus session bus. If the socket
-`RUNDIR/bus` exists by the time readiness has been signaled, the
-variable `DBUS_SESSION_BUS_ADDRESS` will automatically be exported into
-the login environment.
-
-That way it is possible to manage the session bus as a user service without
-having to spawn it on-demand.
-
-User services making use of the bus need to ensure that the variable is
-exported in their launch environment in some way, as the service manager
-runs outside of the user's login session. This can be done for example
-with `dinitctl setenv`, which you can make a part of your session bus
-service startup process.
-
-D-Bus handling can be disabled in the configuration file. It is also
-not handled at all if the runtime directory path is not exported.
-
-## TODO
-
-* Do not hardcode things to make it easier to use for other projects.
+This does not take care of exporting the variable into the activation env.
+Doing so is up to the user service that spawns the session bus. It can and
+should do so with for example `dinitctl setenv`.
