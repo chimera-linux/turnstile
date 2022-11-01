@@ -42,6 +42,12 @@ debug_stderr = no
 #
 boot_dir = .config/dinit.d/boot.d
 
+# This is just like boot_dir, but not controlled by the
+# user. Instead, the system installs links there, and
+# they are started for all users universally.
+#
+system_boot_dir = /usr/lib/dinit.d/user/boot.d
+
 # A directory user service files are read from. Can be
 # set multiple times, in which case multiple service
 # directories will be used. Relative paths are within

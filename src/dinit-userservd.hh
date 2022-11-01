@@ -98,6 +98,7 @@ struct cfg_data {
     bool export_dbus = true;
     std::string rdir_path = RUN_PATH "/user/%u";
     std::string boot_path = ".config/dinit.d/boot.d";
+    std::string sys_boot_path = "/usr/lib/dinit.d/user/boot.d";
     std::vector<std::string> srv_paths{};
 };
 

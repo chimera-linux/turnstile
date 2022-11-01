@@ -112,6 +112,8 @@ void cfg_read(char const *cfgpath) {
             } else {
                 cdata->boot_path = ass;
             }
+        } else if (!std::strcmp(bufp, "system_boot_dir")) {
+            cdata->sys_boot_path = ass;
         } else if (!std::strcmp(bufp, "services_dir")) {
             cdata->srv_paths.push_back(ass);
         }

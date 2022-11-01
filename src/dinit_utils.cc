@@ -76,7 +76,7 @@ void dinit_child(session &sess, char const *pipenum) {
         perror("dinit: failed to create dinit dir");
         return;
     }
-    /* set up service file */
+    /* set up service files */
     {
         auto bfd = openat(tdirfd, "boot", O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (bfd < 0) {
@@ -86,16 +86,35 @@ void dinit_child(session &sess, char const *pipenum) {
         /* reopen as a real file handle, now owns bfd */
         auto *f = fdopen(bfd, "w");
         if (!f) {
-            perror("dinit: fopen failed");
+            perror("dinit: fdopen failed");
             return;
         }
         /* write boot service */
         std::fprintf(f, "type = internal\n");
+        /* system service dependency */
+        std::fprintf(f, "depends-on = system\n");
         /* wait for a service directory */
         std::fprintf(
             f, "waits-for.d = %s/%s\n", sess.homedir,
             cdata->boot_path.data()
         );
+        std::fclose(f);
+        /* now system */
+        bfd = openat(tdirfd, "system", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (bfd < 0) {
+            perror("dinit: openat failed");
+            return;
+        }
+        /* ditto */
+        f = fdopen(bfd, "w");
+        if (!f) {
+            perror("dinit: fdopen failed");
+            return;
+        }
+        /* this is also internal */
+        std::fprintf(f, "type = internal\n");
+        /* wait for system service directory */
+        std::fprintf(f, "waits-for.d = %s\n", cdata->sys_boot_path.data());
         std::fclose(f);
     }
     /* create boot path, if possible; if it fails, it fails (harmless-ish) */
