@@ -1,6 +1,6 @@
 # dinit-userservd
 
-v0.90.0 (pre-alpha release)
+v0.91.0 (pre-alpha release)
 
 This is a daemon and a PAM module to handle user services management with the
 `dinit` init system and service manager (https://github.com/davmac314/dinit).
