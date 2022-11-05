@@ -62,6 +62,19 @@ services_dir = /etc/dinit.d/user
 services_dir = /usr/local/lib/dinit.d/user
 services_dir = /usr/lib/dinit.d/user
 
+# Whether to keep already started services running even
+# after the last login of the user is gone. The default
+# behavior is to stop them unless a file with the same
+# name as the user exists in '@LINGER_PATH@'.
+#
+# It is not necessary to log in and out when the linger
+# directory is changed, as the current state is checked
+# upon last logout.
+#
+# Valid values are 'yes', 'no' and 'maybe'.
+#
+linger = maybe
+
 # The value of XDG_RUNTIME_DIR that is exported into the
 # user service environment. Special values '%u' (user ID),
 # '%g' (group ID) and '%%' (the character %) are allowed

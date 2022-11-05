@@ -2,3 +2,8 @@ option('rundir',
     type: 'string', value: '/run',
     description: 'Where the base directory will be located'
 )
+
+option('statedir',
+    type: 'string', value: 'lib/dinit-userservd',
+    description: 'The state directory relative to localstatedir'
+)

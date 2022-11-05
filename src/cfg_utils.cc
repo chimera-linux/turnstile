@@ -88,6 +88,14 @@ void cfg_read(char const *cfgpath) {
             read_bool("manage_rundir", ass, cdata->manage_rdir);
         } else if (!std::strcmp(bufp, "export_dbus_address")) {
             read_bool("export_dbus_address", ass, cdata->export_dbus);
+        } else if (!std::strcmp(bufp, "linger")) {
+            if (!std::strcmp(ass, "maybe")) {
+                cdata->linger = false;
+                cdata->linger_never = false;
+            } else {
+                read_bool("linger", ass, cdata->linger);
+                cdata->linger_never = !cdata->linger;
+            }
         } else if (!std::strcmp(bufp, "rundir_path")) {
             cdata->rdir_path = ass;
         } else if (!std::strcmp(bufp, "login_timeout")) {

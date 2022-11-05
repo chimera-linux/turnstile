@@ -19,6 +19,7 @@
 #include <cctype>
 #include <algorithm>
 
+#include <pwd.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -475,6 +476,26 @@ static void timer_handler(int sign, siginfo_t *si, void *) {
     write(sigpipe[1], &d, sizeof(d));
 }
 
+static bool check_linger(session const &sess) {
+    if (cdata->linger_never) {
+        return false;
+    }
+    if (cdata->linger) {
+        return true;
+    }
+    int dfd = open(LINGER_PATH, O_RDONLY);
+    if (dfd < 0) {
+        return false;
+    }
+    auto *pw = getpwuid(sess.uid);
+    struct stat lbuf;
+    bool ret = (pw && !fstatat(
+        dfd, pw->pw_name, &lbuf, AT_SYMLINK_NOFOLLOW
+    ) && S_ISREG(lbuf.st_mode));
+    close(dfd);
+    return ret;
+}
+
 /* terminate given conn, but only if within session */
 static bool conn_term_sess(session &sess, int conn) {
     for (auto cit = sess.conns.begin(); cit != sess.conns.end(); ++cit) {
@@ -487,7 +508,7 @@ static bool conn_term_sess(session &sess, int conn) {
         );
         sess.conns.erase(cit);
         /* empty now; shut down session */
-        if (sess.conns.empty()) {
+        if (sess.conns.empty() && !check_linger(sess)) {
             print_dbg("dinit: stop");
             if (sess.dinit_pid != -1) {
                 print_dbg("dinit: term");

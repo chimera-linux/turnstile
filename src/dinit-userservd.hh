@@ -96,6 +96,8 @@ struct cfg_data {
     bool debug_stderr = false;
     bool manage_rdir = false;
     bool export_dbus = true;
+    bool linger = false;
+    bool linger_never = false;
     std::string rdir_path = RUN_PATH "/user/%u";
     std::string boot_path = ".config/dinit.d/boot.d";
     std::string sys_boot_path = "/usr/lib/dinit.d/user/boot.d";

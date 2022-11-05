@@ -20,6 +20,15 @@ conf_data.set_quoted('CONF_PATH', join_paths(
     get_option('prefix'), get_option('sysconfdir')
 ))
 
+statepath = join_paths(
+    get_option('prefix'), get_option('localstatedir'),
+    get_option('statedir')
+)
+lingerpath = join_paths(statepath, 'linger')
+
+conf_data.set_quoted('STATE_PATH', statepath)
+conf_data.set_quoted('LINGER_PATH', lingerpath)
+
 configure_file(output: 'config.hh', configuration: conf_data)
 
 extra_inc = [include_directories('src')]
@@ -57,6 +66,7 @@ install_data(
 
 uconf_data = configuration_data()
 uconf_data.set('RUN_PATH', get_option('rundir'))
+uconf_data.set('LINGER_PATH', lingerpath)
 
 configure_file(
     input: 'dinit-userservd.conf.in',
