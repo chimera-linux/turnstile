@@ -71,6 +71,11 @@ services_dir = /usr/lib/dinit.d/user
 # directory is changed, as the current state is checked
 # upon last logout.
 #
+# Note that lingering is disabled when manage_rundir is
+# set to no. That is because various user services may
+# be relying on the rundir's existence, and it cannot
+# be deleted until the user is gone.
+#
 # Valid values are 'yes', 'no' and 'maybe'.
 #
 linger = maybe

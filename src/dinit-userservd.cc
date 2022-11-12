@@ -477,6 +477,13 @@ static void timer_handler(int sign, siginfo_t *si, void *) {
 }
 
 static bool check_linger(session const &sess) {
+    if (!cdata->manage_rdir) {
+        /* we don't want to linger when we are not in charge of the rundir,
+         * because services may be relying on it; we can never really delete
+         * the rundir when lingering, and something like elogind might
+         */
+        return false;
+    }
     if (cdata->linger_never) {
         return false;
     }

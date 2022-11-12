@@ -88,13 +88,6 @@ Some of the configuration options include debug logging, custom directories
 where user services are located and so on. There is also some auxiliary
 functionality:
 
-### Session persistence
-
-It is optionally possible to keep services running even after the last login
-has logged out. This is controlled through the `linger` option in the config
-file. The default behavior allows for per-user control, with no lingering by
-default except for users specially marked in the state directory.
-
 ### Rundir management
 
 The daemon relies on the `XDG_RUNTIME_DIR` functionality and exports the env
@@ -110,6 +103,15 @@ needs to be manually enabled in the configuration file.
 
 When the daemon manages the directory, the environment variable is also
 exported into the login environment in addition to the activation environment.
+
+### Session persistence
+
+It is optionally possible to keep services running even after the last login
+has logged out. This is controlled through the `linger` option in the config
+file. The default behavior allows for per-user control, with no lingering by
+default except for users specially marked in the state directory.
+
+Lingering only works when rundir management is enabled.
 
 ### D-Bus session bus handling
 
