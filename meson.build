@@ -1,7 +1,7 @@
 project(
     'dinit-userservd',
     ['cpp'],
-    version: '0.91.0',
+    version: '0.92.0',
     default_options: [
         'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
         'cpp_eh=none', 'cpp_rtti=false',
