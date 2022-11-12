@@ -6,7 +6,7 @@ dinit-userservd - the main session management daemon
 
 # SYNOPSIS
 
-*elogind* [config_path]
+*dinit-userservd* [config_path]
 
 # DESCRIPTION
 
