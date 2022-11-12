@@ -108,9 +108,8 @@ if get_option('man')
     ]
 
     foreach filename: man_files
-        topic = '@0@'.format(filename).split('.')[-3].split('/')[-1]
         section = '@0@'.format(filename).split('.')[-2]
-        output = '@0@.@1@'.format(topic, section)
+        output = '@0@'.format(filename).split('/')[-1].replace('.scd', '')
 
         custom_target(
             output,
