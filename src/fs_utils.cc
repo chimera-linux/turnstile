@@ -128,6 +128,8 @@ bool dir_clear_contents(int dfd) {
 
         print_dbg("dir_clear: clear %s at %d", dent->d_name, dfd);
         int efd = openat(dfd, dent->d_name, O_RDONLY);
+        int ufl = 0;
+
         if (efd < 0) {
             /* this may fail e.g. for invalid sockets, we don't care */
             goto do_unlink;
@@ -145,14 +147,13 @@ bool dir_clear_contents(int dfd) {
                 closedir(d);
                 return false;
             }
+            ufl = AT_REMOVEDIR;
         } else {
             close(efd);
         }
 
 do_unlink:
-        if (unlinkat(
-            dfd, dent->d_name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0
-        ) < 0) {
+        if (unlinkat(dfd, dent->d_name, ufl) < 0) {
             print_err("dir_clear: unlinkat failed (%s)", strerror(errno));
             closedir(d);
             return false;
