@@ -39,7 +39,7 @@ static void free_sock(pam_handle_t *, void *data, int) {
 
 static bool open_session(
     pam_handle_t *pamh, unsigned int &uid, int, char const **,
-    unsigned int &orlen, char *orbuf, bool &set_rundir
+    unsigned int &orlen, char *orbuf, bool &set_rundir, bool &set_dbus
 ) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
     if (!sock) {
@@ -185,26 +185,22 @@ static bool open_session(
                     }
                     break;
                 case MSG_OK:
-                    /* if started, get the rundir back; else block */
-                    if ((msg == MSG_OK_DONE) || (msg == MSG_OK_WAIT)) {
-                        state = msg;
-                        if ((msg == MSG_OK_DONE) && !send_msg(MSG_REQ_RLEN)) {
-                            goto err;
-                        }
-                        continue;
-                    }
-                    /* bad message */
-                    goto err;
                 case MSG_OK_WAIT:
-                    /* if we previously waited and now got another message,
+                    /* if started, get the rundir back; else block
+                     *
+                     * if we previously waited and now got another message,
                      * it means either an error or that the system is now
                      * fully ready
                      */
-                    if (msg == MSG_OK_DONE) {
-                        state = msg;
+                    if ((msg & MSG_TYPE_MASK) == MSG_OK_DONE) {
+                        state = msg & MSG_TYPE_MASK;
+                        set_dbus = !!(msg >> MSG_TYPE_BITS);
                         if (!send_msg(MSG_REQ_RLEN)) {
                             goto err;
                         }
+                        continue;
+                    } else if ((state == MSG_OK) && (msg == MSG_OK_WAIT)) {
+                        state = msg;
                         continue;
                     }
                     /* bad message */
@@ -270,10 +266,12 @@ extern "C" PAMAPI int pam_sm_open_session(
     pam_handle_t *pamh, int, int argc, char const **argv
 ) {
     unsigned int uid, rlen = 0;
-    bool set_rundir = false;
+    bool set_rundir = false, set_dbus = false;
     /* potential rundir we are managing */
     char rdir[DIRLEN_MAX + 1];
-    if (!open_session(pamh, uid, argc, argv, rlen, rdir, set_rundir)) {
+    if (!open_session(
+        pamh, uid, argc, argv, rlen, rdir, set_rundir, set_dbus
+    )) {
         return PAM_SESSION_ERR;
     }
     if (rlen) {
@@ -284,7 +282,10 @@ extern "C" PAMAPI int pam_sm_open_session(
         std::snprintf(buf, sizeof(buf), "%s%s/bus", dpfx, rdir);
 
         struct stat sbuf;
-        if (!lstat(strchr(buf, '/'), &sbuf) && S_ISSOCK(sbuf.st_mode)) {
+        if (
+            set_dbus &&
+            !lstat(strchr(buf, '/'), &sbuf) && S_ISSOCK(sbuf.st_mode)
+        ) {
             if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
                 return PAM_SESSION_ERR;
             }

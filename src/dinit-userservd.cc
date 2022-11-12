@@ -376,7 +376,9 @@ static bool handle_read(int fd) {
             if (!sess->dinit_wait) {
                 /* already started, reply with ok */
                 print_dbg("msg: done");
-                return msg_send(fd, MSG_OK_DONE);
+                return msg_send(
+                    fd, MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE)
+                );
             } else {
                 if (sess->dinit_pid == -1) {
                     if (sess->term_pid != -1) {
@@ -677,7 +679,7 @@ static bool dinit_reaper(pid_t pid) {
         } else if (pid == sess.start_pid) {
             /* reaping service startup jobs */
             print_dbg("dinit: ready notification");
-            unsigned int msg = MSG_OK_DONE;
+            unsigned int msg = MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE);
             for (auto c: sess.conns) {
                 if (send(c, &msg, sizeof(msg), 0) < 0) {
                     print_err("conn: send failed (%s)", strerror(errno));

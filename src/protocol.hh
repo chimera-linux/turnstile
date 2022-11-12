@@ -48,8 +48,8 @@
  *   SERVER: adds to buffer, responds MSG_OK
  * CLIENT: sends MSG_OK to confirm everything is ready on its side
  * SERVER: if service manager for the user is already running, responds
- *         with MSG_OK_DONE; else initiates startup and responds with
- *         MSG_OK_WAIT
+ *         with MSG_OK_DONE (with export_dbus attached as aux data); else
+ *         initiates startup and responds with MSG_OK_WAIT
  * CLIENT: if MSG_OK_WAIT was received, waits for a message
  * SERVER: once service manager starts, MSG_OK_DONE is sent
  * CLIENT: sends MSG_REQ_RLEN
