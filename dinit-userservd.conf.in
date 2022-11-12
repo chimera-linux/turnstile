@@ -88,14 +88,17 @@ linger = maybe
 #
 rundir_path = @RUN_PATH@/user/%u
 
-# Whether to manage the XDG_RUNTIME_DIR. By default, it
-# is assumed that something else manages it (typically
-# this is elogind). If you are not running anything that
-# manages the directory, you can turn this on.
+# Whether to manage the XDG_RUNTIME_DIR. This may conflict
+# with other rundir management methods, such as elogind,
+# so when turning it on, make sure this is not the case.
+#
+# It is a requirement for the linger functionality to work.
+#
+# The default is dependent on the build (here: @MANAGE_RUNDIR@).
 #
 # Valid values are 'yes' and 'no'.
 #
-manage_rundir = no
+manage_rundir = @MANAGE_RUNDIR@
 
 # Whether to export DBUS_SESSION_BUS_ADDRESS into the
 # environment. When enabled, this will be exported and

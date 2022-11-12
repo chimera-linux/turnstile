@@ -94,7 +94,7 @@ struct cfg_data {
     bool debug = false;
     bool disable = false;
     bool debug_stderr = false;
-    bool manage_rdir = false;
+    bool manage_rdir = MANAGE_RUNDIR;
     bool export_dbus = true;
     bool linger = false;
     bool linger_never = false;

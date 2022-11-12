@@ -94,15 +94,15 @@ The daemon relies on the `XDG_RUNTIME_DIR` functionality and exports the env
 variable into the service activation environment. The path is specified in
 the configuration file and tends to be something like `/run/user/$UID`.
 
-By default, it relies on something else to manage the directory. Typically
-this is something like `elogind`.
+It can manage the directory by itself, if that is enabled. By default, this
+is build-dependent. There are other solutions that can manage the runtime
+directory, such as `elogind`, and typically they conflict. Therefore, do
+be careful with it. However, the session persistence functionality relies
+on this being enabled.
 
-However, it can also manage the directory by itself, in environments that
-do not have anything else to manage it. This is disabled by default and
-needs to be manually enabled in the configuration file.
-
-When the daemon manages the directory, the environment variable is also
-exported into the login environment in addition to the activation environment.
+You can toggle it in the configuration file. When the daemon manages the
+directory, the environment variable is also exported into the login
+environment in addition to the activation environment.
 
 ### Session persistence
 

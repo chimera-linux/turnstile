@@ -7,3 +7,8 @@ option('statedir',
     type: 'string', value: 'lib/dinit-userservd',
     description: 'The state directory relative to localstatedir'
 )
+
+option('manage_rundir',
+   type: 'boolean', value: false,
+   description: 'Whether to manage rundir by default'
+)

@@ -19,6 +19,7 @@ conf_data.set_quoted('RUN_PATH', get_option('rundir'))
 conf_data.set_quoted('CONF_PATH', join_paths(
     get_option('prefix'), get_option('sysconfdir')
 ))
+conf_data.set10('MANAGE_RUNDIR', get_option('manage_rundir'))
 
 statepath = join_paths(
     get_option('prefix'), get_option('localstatedir'),
@@ -65,8 +66,15 @@ install_data(
 )
 
 uconf_data = configuration_data()
+
 uconf_data.set('RUN_PATH', get_option('rundir'))
 uconf_data.set('LINGER_PATH', lingerpath)
+
+if get_option('manage_rundir')
+    uconf_data.set('MANAGE_RUNDIR', 'yes')
+else
+    uconf_data.set('MANAGE_RUNDIR', 'no')
+endif
 
 configure_file(
     input: 'dinit-userservd.conf.in',
