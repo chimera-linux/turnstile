@@ -86,6 +86,10 @@ linger = maybe
 # and substituted in the string. Set to empty string if
 # you want to prevent it from being exported altogether.
 #
+# If you are using elogind, you should not mess with this
+# path, and doing so will result in subtly broken systems.
+# You should in general not mess with this path.
+#
 rundir_path = @RUN_PATH@/user/%u
 
 # Whether to manage the XDG_RUNTIME_DIR. This may conflict
