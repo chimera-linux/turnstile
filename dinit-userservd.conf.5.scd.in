@@ -1,0 +1,114 @@
+dinit-userservd.conf(5)
+
+# NAME
+
+dinit-userservd.conf - the *dinit-userservd*(8) configuration file
+
+# DESCRIPTION
+
+The file _dinit-userservd.conf_ contains the daemon's configuration.
+
+While the daemon can run without any configuration file thanks to its
+built-in defaults, there are many options that the user may want to
+adjust to their liking.
+
+# SYNTAX
+
+The configuration file has a simple line-based syntax. Each option line
+consists of the option name and option value separated by the '=' symbol.
+
+Comments start with the '#' symbol. All whitespace is ignored, including
+lines containing only whitespace, trailing whitespace, leading whitespace
+and whitespace inbetween names.
+
+Only 1024 characters at most are read per line, including whitespace. If
+longer, the rest is simply ignored.
+
+# OPTIONS
+
+This is the list of possible options, with their type and default value,
+as well as additional description.
+
+Boolean options accept only the values _yes_ and _no_. Other options may
+accept more values.
+
+*debug* (boolean: _no_)
+	Whether to output debug information. This is verbose logging that is
+	only useful when investigating issues.
+
+*disable* (boolean: _no_)
+	Whether to disable user service handling. If set to yes, no dinit
+	instances will be spawned, but the daemon will still perform login
+	tracking and auxiliary tasks such as rundir management.
+
+*debug\_stderr* (boolean: _no_)
+	Whether to print debug messages also to stderr.
+
+*boot\_dir* (string: _.config/dinit.d/boot.d_)
+	The directory containing service links that must be started in order
+	for the login to proceed. Can be empty, in which case nothing is waited
+	for. Relative to the home directory.
+
+*system\_boot\_dir* (string: _/usr/lib/dinit.d/user/boot.d_)
+	This is just like boot_dir, but not controlled by the user. Instead, the
+	system installs links there, and they are started for all users
+	universally.
+
+*services\_dir* (string)
+	A directory user service files are read from. Can be set multiple times,
+	in which case multiple service directories will be used. Relative paths
+	are within the user's home directory. The ordering matters, as earlier
+	directories will be checked first.
+
+	If no directory is set in the config file, a default list is used, which
+	consists of the following:
+
+	- .config/dinit.d
+	- /etc/dinit.d/user
+	- /usr/local/lib/dinit.d/user
+	- /usr/lib/dinit.d/user
+
+*linger* (combo: _maybe_)
+	Whether to keep already started services running even after the last login
+	of the user is gone. The default behavior is to stop them unless a file
+	with the same name as the user exists in _@LINGER_PATH@_.
+
+	It is not necessary to log in and out when the linger directory is changed,
+	as the current state is checked upon last logout.
+
+	Note that lingering is disabled when _manage\_rundir_ is set to no. That is
+	because various user services may be relying on the rundir's existence,
+	and it cannot be deleted until the user is gone.
+
+	Valid values are _yes_, _no_ and _maybe_.
+
+*rundir\_path* (string: _@RUN_PATH@/usr/%u_)
+	The value of _$XDG\_RUNTIME\_DIR_ that is exported into the user service
+	environment. Special values _%u_ (user ID), _%g_ (group ID) and _%%_
+	(the character '%') are allowed and substituted in the string. Set to
+	empty string if you want to prevent it from being exported altogether.
+
+	If you are using elogind, you should not mess with this path, and doing
+	so will result in subtly broken systems. You should in general not mess
+	with this path.
+
+*manage\_rundir* (boolean: _@MANAGE_RUNDIR@_)
+	Whether to manage the _$XDG\_RUNTIME\_DIR_. This may conflict with other
+	rundir management methods, such as elogind, so when turning it on, make
+	sure this is not the case.
+
+	It is a requirement for the linger functionality to work.
+
+	The default is dependent on the build.
+
+*export\_dbus\_address* (boolean: _yes_)
+	Whether to export _$DBUS\_SESSION\_BUS\_ADDRESS_ into the environment.
+	When enabled, this will be exported and set to 'unix:path=RUNDIR/bus'
+	where RUNDIR is the expanded value of _rundir\_path_. This works
+	regardless of if rundir is managed.
+
+*login\_timeout* (integer: _60_)
+	The timeout for the login (in seconds). If the user services that are a
+	part of the initial startup process take longer than this, the service
+	manager	instance is terminated and all connections to the session are
+	closed.

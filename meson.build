@@ -14,6 +14,8 @@ cpp = meson.get_compiler('cpp')
 pam_dep = dependency('pam', required: true)
 rt_dep = cpp.find_library('rt', required: false)
 
+scdoc_dep = dependency('scdoc', version: '>=1.10', required: get_option('man'))
+
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
 conf_data.set_quoted('CONF_PATH', join_paths(
@@ -84,3 +86,42 @@ configure_file(
     install_dir: get_option('sysconfdir'),
     install_mode: 'rw-r--r--'
 )
+
+cscd = configure_file(
+    input: 'dinit-userservd.conf.5.scd.in',
+    output: 'dinit-userservd.conf.5.scd',
+    configuration: uconf_data
+)
+
+if get_option('man')
+    scdoc_prog = find_program(
+        scdoc_dep.get_pkgconfig_variable('scdoc'),
+        native: true
+    )
+    sh = find_program('sh', native: true)
+    mandir = get_option('mandir')
+
+    man_files = [
+        'src/dinit-userservd.8.scd',
+        'src/pam_dinit_userservd.8.scd',
+        cscd,
+    ]
+
+    foreach filename: man_files
+        topic = '@0@'.format(filename).split('.')[-3].split('/')[-1]
+        section = '@0@'.format(filename).split('.')[-2]
+        output = '@0@.@1@'.format(topic, section)
+
+        custom_target(
+            output,
+            input: filename,
+            capture: true,
+            output: output,
+            command: [
+                sh, '-c', '@0@ < @INPUT@'.format(scdoc_prog.path())
+            ],
+            install: true,
+            install_dir: '@0@/man@1@'.format(mandir, section)
+        )
+    endforeach
+endif
