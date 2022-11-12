@@ -99,7 +99,7 @@ bool dir_clear_contents(int dfd) {
     }
     DIR *d = fdopendir(dfd);
     if (!d) {
-        print_err("rundir: fdopendir failed (%s)", strerror(errno));
+        print_err("dir_clear: fdopendir failed (%s)", strerror(errno));
         close(dfd);
         return false;
     }
@@ -112,7 +112,7 @@ bool dir_clear_contents(int dfd) {
 
     for (;;) {
         if (readdir_r(d, dentb, &dent) < 0) {
-            print_err("rundir: readdir_r failed (%s)", strerror(errno));
+            print_err("dir_clear: readdir_r failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
@@ -126,17 +126,16 @@ bool dir_clear_contents(int dfd) {
             continue;
         }
 
-        print_dbg("rundir: clear %s at %d", dent->d_name, dfd);
+        print_dbg("dir_clear: clear %s at %d", dent->d_name, dfd);
         int efd = openat(dfd, dent->d_name, O_RDONLY);
         if (efd < 0) {
-            print_err("rundir: openat failed (%s)", strerror(errno));
-            closedir(d);
-            return false;
+            /* this may fail e.g. for invalid sockets, we don't care */
+            goto do_unlink;
         }
 
         struct stat st;
         if (fstat(efd, &st) < 0) {
-            print_err("rundir: fstat failed (%s)", strerror(errno));
+            print_err("dir_clear: fstat failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
@@ -150,10 +149,11 @@ bool dir_clear_contents(int dfd) {
             close(efd);
         }
 
+do_unlink:
         if (unlinkat(
             dfd, dent->d_name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0
         ) < 0) {
-            print_err("rundir: unlinkat failed (%s)", strerror(errno));
+            print_err("dir_clear: unlinkat failed (%s)", strerror(errno));
             closedir(d);
             return false;
         }
