@@ -479,13 +479,6 @@ static void timer_handler(int sign, siginfo_t *si, void *) {
 }
 
 static bool check_linger(session const &sess) {
-    if (!cdata->manage_rdir) {
-        /* we don't want to linger when we are not in charge of the rundir,
-         * because services may be relying on it; we can never really delete
-         * the rundir when lingering, and something like elogind might
-         */
-        return false;
-    }
     if (cdata->linger_never) {
         return false;
     }
@@ -869,6 +862,19 @@ int main(int argc, char **argv) {
         cfg_read(argv[1]);
     } else {
         cfg_read(DEFAULT_CFG_PATH);
+    }
+
+    if (!cdata->manage_rdir && !std::getenv(
+        "DINIT_USERSERVD_LINGER_ENABLE_FORCE"
+    )) {
+        /* we don't want to linger when we are not in charge of the rundir,
+         * because services may be relying on it; we can never really delete
+         * the rundir when lingering, and something like elogind might
+         *
+         * for those who are aware of the consequences and have things handled
+         * on their own, they can start the daemon with the env variable
+         */
+        cdata->linger_never = true;
     }
 
     print_dbg("userservd: init signal fd");

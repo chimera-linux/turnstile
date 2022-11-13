@@ -78,7 +78,8 @@ accept more values.
 
 	Note that lingering is disabled when _manage\_rundir_ is set to no. That is
 	because various user services may be relying on the rundir's existence,
-	and it cannot be deleted until the user is gone.
+	and it cannot be deleted until the user is gone. This is overridable with
+	an environment variable (for those who worked around it on their own).
 
 	Valid values are _yes_, _no_ and _maybe_.
 

@@ -28,3 +28,14 @@ used, typically _/etc/dinit-userservd.conf_.
 
 The daemon can also serve as the manager of the _$XDG\_RUNTIME\_DIR_
 environment variable and directory.
+
+# ENVIRONMENT
+
+*DINIT\_USERSERVD\_LINGER\_ENABLE\_FORCE*
+	If set during daemon startup (to any value), enable lingering even if
+	rundir management is disabled. This is primarily for people who want
+	to use the linger functionality and have worked around the problem in
+	their own rundir management system. Enabling this without having worked
+	around the problem may lead to unfortunate consequences.
+
+	Of course, lingering still has to be enabled in the configuration.
