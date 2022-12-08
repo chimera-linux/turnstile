@@ -4,7 +4,7 @@ option('rundir',
 )
 
 option('statedir',
-    type: 'string', value: 'lib/dinit-userservd',
+    type: 'string', value: 'lib/turnstiled',
     description: 'The state directory relative to localstatedir'
 )
 

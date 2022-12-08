@@ -1,4 +1,4 @@
-/* pam_dinit_userservd: the client part of dinit-userservd
+/* pam_turnstile: the client part of turnstiled
  *
  * it connects to its socket and requests logins/logouts,
  * communicating over a rudimentary protocol

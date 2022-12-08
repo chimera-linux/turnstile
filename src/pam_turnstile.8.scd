@@ -1,16 +1,16 @@
-pam_dinit_userservd(8)
+pam_turnstile(8)
 
 # NAME
 
-pam\_dinit\_userservd - register user sessions in *dinit-userservd*(8)
+pam\_turnstile - register user sessions in *turnstiled*(8)
 
 # SYNOPSIS
 
-pam\_dinit\_userservd.so
+pam\_turnstile.so
 
 # DESCRIPTION
 
-*pam\_dinit\_userservd* registers user sessions with the main daemon,
+*pam\_turnstile* registers user sessions with the main daemon,
 which allows them to be tracked.
 
 It communicates with the daemon over its control socket. Upon login,

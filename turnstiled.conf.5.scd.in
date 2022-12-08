@@ -1,12 +1,12 @@
-dinit-userservd.conf(5)
+turnstiled.conf(5)
 
 # NAME
 
-dinit-userservd.conf - the *dinit-userservd*(8) configuration file
+turnstiled.conf - the *turnstiled*(8) configuration file
 
 # DESCRIPTION
 
-The file _dinit-userservd.conf_ contains the daemon's configuration.
+The file _turnstiled.conf_ contains the daemon's configuration.
 
 While the daemon can run without any configuration file thanks to its
 built-in defaults, there are many options that the user may want to

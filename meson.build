@@ -1,7 +1,7 @@
 project(
-    'dinit-userservd',
+    'turnstile',
     ['cpp'],
-    version: '0.92.0',
+    version: '0.1.0',
     default_options: [
         'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
         'cpp_eh=none', 'cpp_rtti=false',
@@ -37,14 +37,14 @@ configure_file(output: 'config.hh', configuration: conf_data)
 extra_inc = [include_directories('src')]
 
 daemon_sources = [
-    'src/dinit-userservd.cc',
+    'src/turnstiled.cc',
     'src/fs_utils.cc',
     'src/cfg_utils.cc',
     'src/dinit_utils.cc',
 ]
 
 daemon = executable(
-    'dinit-userservd', daemon_sources,
+    'turnstiled', daemon_sources,
     include_directories: extra_inc,
     install: true,
     dependencies: [rt_dep],
@@ -52,7 +52,7 @@ daemon = executable(
 )
 
 pam_mod = shared_module(
-    'pam_dinit_userservd', 'src/pam_dinit_userservd.cc',
+    'pam_turnstile', 'src/pam_turnstile.cc',
     include_directories: extra_inc,
     install: true,
     install_dir: join_paths(get_option('libdir'), 'security'),
@@ -62,7 +62,7 @@ pam_mod = shared_module(
 )
 
 install_data(
-    'dinit-userservd',
+    'turnstiled',
     install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
     install_mode: 'rw-r--r--'
 )
@@ -79,8 +79,8 @@ else
 endif
 
 configure_file(
-    input: 'dinit-userservd.conf.in',
-    output: 'dinit-userservd.conf',
+    input: 'turnstiled.conf.in',
+    output: 'turnstiled.conf',
     configuration: uconf_data,
     install: true,
     install_dir: get_option('sysconfdir'),
@@ -88,8 +88,8 @@ configure_file(
 )
 
 cscd = configure_file(
-    input: 'dinit-userservd.conf.5.scd.in',
-    output: 'dinit-userservd.conf.5.scd',
+    input: 'turnstiled.conf.5.scd.in',
+    output: 'turnstiled.conf.5.scd',
     configuration: uconf_data
 )
 
@@ -102,8 +102,8 @@ if get_option('man')
     mandir = get_option('mandir')
 
     man_files = [
-        'src/dinit-userservd.8.scd',
-        'src/pam_dinit_userservd.8.scd',
+        'src/turnstiled.8.scd',
+        'src/pam_turnstile.8.scd',
         cscd,
     ]
 

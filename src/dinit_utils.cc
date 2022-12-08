@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "dinit-userservd.hh"
+#include "turnstiled.hh"
 
 bool dinit_boot(session &sess, bool disabled) {
     print_dbg("dinit: boot wait");

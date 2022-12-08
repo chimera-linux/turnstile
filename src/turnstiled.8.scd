@@ -1,28 +1,28 @@
-dinit-userservd(8)
+turnstiled(8)
 
 # NAME
 
-dinit-userservd - the main session management daemon
+turnstiled - the main session management daemon
 
 # SYNOPSIS
 
-*dinit-userservd* [config_path]
+*turnstiled* [config_path]
 
 # DESCRIPTION
 
-*dinit-userservd* is a daemon that manages user instances for the Dinit
+*turnstiled* is a daemon that manages user instances for the Dinit
 service manager.
 
-For configuration, see *dinit-userservd.conf*(5).
+For configuration, see *turnstiled.conf*(5).
 
 Upon user login, it spawns an instance of Dinit for the user, while upon
 last logout, it shuts down this instance (unless configured to longer).
 
-User logins and logouts are communicated via *pam\_dinit\_userservd*(8).
+User logins and logouts are communicated via *pam\_turnstile*(8).
 
 The daemon itself takes no options other than possibly a configuration
 file path as its sole argument. If not provided, the default path is
-used, typically _/etc/dinit-userservd.conf_.
+used, typically _/etc/turnstiled.conf_.
 
 # XDG\_RUNTIME\_DIR MANAGEMENT
 
@@ -31,7 +31,7 @@ environment variable and directory.
 
 # ENVIRONMENT
 
-*DINIT\_USERSERVD\_LINGER\_ENABLE\_FORCE*
+*TURNSTILED\_LINGER\_ENABLE\_FORCE*
 	If set during daemon startup (to any value), enable lingering even if
 	rundir management is disabled. This is primarily for people who want
 	to use the linger functionality and have worked around the problem in

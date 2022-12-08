@@ -1,4 +1,4 @@
-## This is the configuration file for dinit-userservd.
+## This is the configuration file for turnstiled.
 ##
 ## The daemon will function even without a configuration
 ## file, but the values here reflect the built-in defaults.

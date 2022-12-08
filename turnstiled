@@ -1,0 +1,7 @@
+# turnstiled service
+
+type       = process
+before     = login.target
+depends-on = init-local.target
+command    = /usr/bin/turnstiled
+logfile    = /var/log/turnstiled.log

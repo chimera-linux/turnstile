@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <dirent.h>
 
-#include "dinit-userservd.hh"
+#include "turnstiled.hh"
 
 int dir_make_at(int dfd, char const *dname, mode_t mode) {
     int sdfd = openat(dfd, dname, O_RDONLY);

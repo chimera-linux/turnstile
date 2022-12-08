@@ -1,17 +1,28 @@
-# dinit-userservd
+# turnstile
 
-v0.92.0 (pre-alpha release)
+Turnstile, formerly dinit-userservd, is a work in progress effort to create
+a session/login tracker to serve as a fully featured alternative to the logind
+subproject from systemd, and to provide a neutral API to both our session
+tracker and to logind itself.
 
-This is a daemon and a PAM module to handle user services management with the
-`dinit` init system and service manager (https://github.com/davmac314/dinit).
+Originally a user instance manager for [Dinit](https://github.com/davmac314/dinit),
+it has eventually outgrown its initial responsibilities, becoming almost a full
+session tracker. At that point, it has been decided that it will become one, and
+attempt to solve the current status quo where logind is the de-facto standard,
+but at the same time very much tied to systemd, with workarounds such as elogind
+being far from ideal.
 
-It was created for the needs of the Chimera Linux project. Environments that
-are significantly different from Chimera's may experience problems and are not
-officially supported; feature requests related to such environments will not
-be addressed.
+Currently, only a daemon is provided. Eventually, a library will be introduced,
+which will have backends both `turnstiled` and for `logind` or `elogind`. This
+will be meant for adoption by upstream software projects. Turnstile is not going
+to attempt seat management, instead [seatd](https://git.sr.ht/~kennylevinsen/seatd)
+should be used for that purpose (whose `libseat` can likewise target `logind` as
+one of its backends). In many projects, it will make sense to use both libraries
+at the same time. However, `libturnstile` will expose some seat information, in
+order to be able to map sessions to seats and vice versa.
 
-Community patches addressing such features are welcome, provided they are not
-disruptive and/or introduce excessive complexity.
+Currently, this is an early work in progress. **Below is the slightly updated old
+information for dinit-userservd, which will be rewritten later.**
 
 ## Purpose
 
@@ -46,14 +57,14 @@ The dependencies are:
 
 The system consists of two parts:
 
-1) The daemon `dinit-userservd`
-2) The PAM module `pam_dinit_userservd.so`
+1) The daemon `turnstiled`
+2) The PAM module `pam_turnstile.so`
 
 The PAM module needs to be enabled in your login path. This will differ in
 every distribution. Generally you need something like this:
 
 ```
-session optional pam_dinit_userservd.so
+session optional pam_turnstile.so
 ```
 
 The daemon needs to be running as superuser when logins happen. The easiest
@@ -62,7 +73,7 @@ an example service (which works on Chimera Linux).
 
 ## How it works
 
-The `dinit-userservd` daemon manages sessions. A session is a set of logins
+The `turnstiled` daemon manages sessions. A session is a set of logins
 of a specific user. Upon first login in a session, the daemon spawns a user
 instance of Dinit. Upon last logout in a session, the instance is stopped.
 The instance is supervised by the daemon and does not have access to any
@@ -81,7 +92,7 @@ module kicks in, it opens a connection to this socket and this connection
 is kept until the user has logged out. This socket is only accessible to
 superuser and uses a simple internal protocol to talk to the PAM module.
 
-The behavior of the daemon is configurable through the `dinit-userservd.conf`
+The behavior of the daemon is configurable through the `turnstiled.conf`
 configuration file. The PAM module is not configurable in any way.
 
 Some of the configuration options include debug logging, custom directories

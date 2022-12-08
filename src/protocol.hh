@@ -4,8 +4,8 @@
  * License: BSD-2-Clause
  */
 
-#ifndef DINIT_USERSERVD_PROTOCOL_HH
-#define DINIT_USERSERVD_PROTOCOL_HH
+#ifndef TURNSTILED_PROTOCOL_HH
+#define TURNSTILED_PROTOCOL_HH
 
 #include <sys/un.h>
 
@@ -15,7 +15,7 @@
 #error "No RUN_PATH is defined"
 #endif
 
-#define SOCK_DIR "dinit-userservd"
+#define SOCK_DIR "turnstiled"
 #define DAEMON_SOCK RUN_PATH "/" SOCK_DIR "/control.sock"
 
 /* maximum length of a directory path we can receive */
@@ -27,7 +27,7 @@
  * message carries the type (4 bits) and optionally auxiliary data
  * (only some messages; MSG_DATA and MSG_REQ_RDATA)
  *
- * dinit-userservd is the server; the pam module is the client
+ * turnstiled is the server; the pam module is the client
  *
  * the client connects to DAEMON_SOCK (seqpacket sockets are used)
  *

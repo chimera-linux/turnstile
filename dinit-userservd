@@ -1,7 +1,0 @@
-# dinit-userservd service
-
-type       = process
-before     = login.target
-depends-on = init.target
-command    = /usr/bin/dinit-userservd
-logfile    = /var/log/dinit-userservd.log

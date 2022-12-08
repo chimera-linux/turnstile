@@ -1,5 +1,5 @@
-/* dinit-userservd: handle incoming session requests and start
- *                  (or stop) dinit user instances as necessary
+/* turnstiled: handle incoming session requests and start
+ *             (or stop) dinit user instances as necessary
  *
  * the daemon should never exit under "normal" circumstances
  *
@@ -29,13 +29,13 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include "dinit-userservd.hh"
+#include "turnstiled.hh"
 
 #ifndef CONF_PATH
 #error "No CONF_PATH is defined"
 #endif
 
-#define DEFAULT_CFG_PATH CONF_PATH "/dinit-userservd.conf"
+#define DEFAULT_CFG_PATH CONF_PATH "/turnstiled.conf"
 
 /* when stopping dinit, we first do a SIGTERM and set up this timeout,
  * if it fails to quit within that period, we issue a SIGKILL and try
@@ -596,10 +596,10 @@ fail:
 }
 
 static bool sig_handle_alrm(void *data) {
-    print_dbg("userservd: sigalrm");
+    print_dbg("turnstiled: sigalrm");
     auto &sess = *static_cast<session *>(data);
     /* disarm the timer first, before it has a chance to fire */
-    print_dbg("userservd: drop timer");
+    print_dbg("turnstiled: drop timer");
     if (!sess.timer_armed) {
         /* this should never happen, unrecoverable */
         print_err("timer: handling alrm but timer not armed");
@@ -609,7 +609,7 @@ static bool sig_handle_alrm(void *data) {
     if (sess.term_pid != -1) {
         if (sess.kill_tried) {
             print_err(
-                "userservd: dinit process %ld refused to die",
+                "turnstiled: dinit process %ld refused to die",
                 static_cast<long>(sess.term_pid)
             );
             return false;
@@ -622,7 +622,7 @@ static bool sig_handle_alrm(void *data) {
         return true;
     }
     /* terminate all connections belonging to this session */
-    print_dbg("userservd: drop session %u", sess.uid);
+    print_dbg("turnstiled: drop session %u", sess.uid);
     for (std::size_t j = 2; j < fds.size(); ++j) {
         if (conn_term_sess(sess, fds[j].fd)) {
             fds[j].fd = -1;
@@ -631,7 +631,7 @@ static bool sig_handle_alrm(void *data) {
     }
     /* this should never happen unless we have a bug */
     if (!sess.conns.empty()) {
-        print_err("userservd: conns not empty, it should be");
+        print_err("turnstiled: conns not empty, it should be");
         /* unrecoverable */
         return false;
     }
@@ -707,13 +707,13 @@ static bool dinit_reaper(pid_t pid) {
 static bool sig_handle_chld() {
     pid_t wpid;
     int status;
-    print_dbg("userservd: sigchld");
+    print_dbg("turnstiled: sigchld");
     /* reap */
     while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
         /* deal with each pid here */
         if (!dinit_reaper(wpid)) {
             print_err(
-                "userservd: failed to restart dinit (%u)\n",
+                "turnstiled: failed to restart dinit (%u)\n",
                 static_cast<unsigned int>(wpid)
             );
             /* this is an unrecoverable condition */
@@ -850,9 +850,9 @@ int main(int argc, char **argv) {
     sessions.reserve(16);
     fds.reserve(64);
 
-    openlog("dinit-userservd", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
+    openlog("turnstiled", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
-    syslog(LOG_INFO, "Initializing dinit-userservd...");
+    syslog(LOG_INFO, "Initializing turnstiled...");
 
     /* initialize configuration structure */
     cfg_data cdata_val;
@@ -865,7 +865,7 @@ int main(int argc, char **argv) {
     }
 
     if (!cdata->manage_rdir && !std::getenv(
-        "DINIT_USERSERVD_LINGER_ENABLE_FORCE"
+        "TURNSTILED_LINGER_ENABLE_FORCE"
     )) {
         /* we don't want to linger when we are not in charge of the rundir,
          * because services may be relying on it; we can never really delete
@@ -877,14 +877,14 @@ int main(int argc, char **argv) {
         cdata->linger_never = true;
     }
 
-    print_dbg("userservd: init signal fd");
+    print_dbg("turnstiled: init signal fd");
 
     {
         struct stat pstat;
         int dfd = open(RUN_PATH, O_RDONLY);
         /* ensure the base path exists and is a directory */
         if (fstat(dfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
-            print_err("userservd base path does not exist");
+            print_err("turnstiled base path does not exist");
             return 1;
         }
         userv_dirfd = dir_make_at(dfd, SOCK_DIR, 0755);
@@ -914,7 +914,7 @@ int main(int argc, char **argv) {
         pfd.revents = 0;
     }
 
-    print_dbg("userservd: init control socket");
+    print_dbg("turnstiled: init control socket");
 
     /* main control socket */
     {
@@ -927,13 +927,13 @@ int main(int argc, char **argv) {
         pfd.revents = 0;
     }
 
-    print_dbg("userservd: main loop");
+    print_dbg("turnstiled: main loop");
 
     std::size_t i = 0, curpipes;
 
     /* main loop */
     for (;;) {
-        print_dbg("userservd: poll");
+        print_dbg("turnstiled: poll");
         auto pret = poll(fds.data(), fds.size(), -1);
         if (pret < 0) {
             /* interrupted by signal */

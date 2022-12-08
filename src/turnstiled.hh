@@ -1,11 +1,11 @@
-/* shared dinit-userservd header
+/* shared turnstiled header
  *
  * Copyright 2022 Daniel "q66" Kolesa <q66@chimera-linux.org>
  * License: BSD-2-Clause
  */
 
-#ifndef DINIT_USERSERVD_HH
-#define DINIT_USERSERVD_HH
+#ifndef TURNSTILED_HH
+#define TURNSTILED_HH
 
 #include <cstddef>
 #include <cstdio>
