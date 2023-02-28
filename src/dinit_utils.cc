@@ -4,9 +4,21 @@
 #include <grp.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <paths.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 
 #include "turnstiled.hh"
+
+#include <sys/resource.h>
+#include <security/pam_appl.h>
+#ifdef HAVE_PAM_MISC
+#  include <security/pam_misc.h>
+#  define PAM_CONV_FUNC misc_conv
+#else
+#  include <security/openpam.h>
+#  define PAM_CONV_FUNC openpam_ttyconv
+#endif
 
 bool dinit_boot(session &sess, bool disabled) {
     print_dbg("dinit: boot wait");
@@ -45,23 +57,119 @@ bool dinit_boot(session &sess, bool disabled) {
     return true;
 }
 
+static bool dpam_setup_groups(pam_handle_t *pamh, struct passwd *pwd) {
+    if (initgroups(pwd->pw_name, pwd->pw_gid) != 0) {
+        perror("dinit: failed to set supplementary groups");
+        return false;
+    }
+    auto pst = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+    if (pst != PAM_SUCCESS) {
+        perror("dinit: pam_setcred");
+        pam_end(pamh, pst);
+        return false;
+    }
+    return true;
+}
+
+static pam_handle_t *dpam_begin(struct passwd *pwd) {
+    pam_conv cnv = {
+        PAM_CONV_FUNC,
+        nullptr
+    };
+    pam_handle_t *pamh = nullptr;
+    auto pst = pam_start(DPAM_SERVICE, pwd->pw_name, &cnv, &pamh);
+    if (pst != PAM_SUCCESS) {
+        perror("dinit: pam_start");
+        return nullptr;
+    }
+    /* set the originating user while at it */
+    pst = pam_set_item(pamh, PAM_RUSER, "root");
+    if (pst != PAM_SUCCESS) {
+        perror("dinit: pam_set_item(PAM_RUSER)");
+        pam_end(pamh, pst);
+        return nullptr;
+    }
+    if (!dpam_setup_groups(pamh, pwd)) {
+        return nullptr;
+    }
+    return pamh;
+}
+
+static void sanitize_limits() {
+    struct rlimit l{0, 0};
+
+    setrlimit(RLIMIT_NICE, &l);
+    setrlimit(RLIMIT_RTPRIO, &l);
+
+    l.rlim_cur = RLIM_INFINITY;
+    l.rlim_max = RLIM_INFINITY;
+    setrlimit(RLIMIT_FSIZE, &l);
+    setrlimit(RLIMIT_AS, &l);
+
+    getrlimit(RLIMIT_NOFILE, &l);
+    if (l.rlim_cur != FD_SETSIZE) {
+        l.rlim_cur = FD_SETSIZE;
+        setrlimit(RLIMIT_NOFILE, &l);
+    }
+}
+
+static bool dpam_open(pam_handle_t *pamh) {
+    /* before opening session, do not rely on just PAM and sanitize a bit */
+    sanitize_limits();
+
+    auto pst = pam_open_session(pamh, 0);
+    if (pst != PAM_SUCCESS) {
+        perror("dinit: pam_open_session");
+        pam_setcred(pamh, PAM_DELETE_CRED | PAM_SILENT);
+        pam_end(pamh, pst);
+        return false;
+    }
+    return true;
+}
+
+static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
+    if (!dpam_open(pamh)) {
+        return false;
+    }
+    /* change identity */
+    if (setgid(pwd->pw_uid) != 0) {
+        perror("dinit: failed to set gid");
+        return false;
+    }
+    if (setuid(pwd->pw_gid) != 0) {
+        perror("dinit: failed to set uid");
+        return false;
+    }
+    return true;
+}
+
+static void dpam_finalize(pam_handle_t *pamh) {
+    if (!pamh) {
+        /* when not doing PAM, at least restore umask to user default,
+         * otherwise the PAM configuration will do it (pam_umask.so)
+         */
+        umask(022);
+        return;
+    }
+    /* end with success */
+    pam_end(pamh, PAM_SUCCESS | PAM_DATA_SILENT);
+}
+
 void dinit_child(session &sess, char const *pipenum) {
+    auto *pw = getpwuid(sess.uid);
+    if (!pw) {
+        perror("dinit: getpwuid failed");
+        return;
+    }
+    if ((pw->pw_uid != sess.uid) || (pw->pw_gid != sess.gid)) {
+        fputs("dinit: uid/gid does not match user", stderr);
+        return;
+    }
+    pam_handle_t *pamh = nullptr;
     if (getuid() == 0) {
-        auto *pw = getpwuid(sess.uid);
-        if (!pw) {
-            perror("dinit: getpwuid failed");
-            return;
-        }
-        if (setgid(sess.gid) != 0) {
-            perror("dinit: failed to set gid");
-            return;
-        }
-        if (initgroups(pw->pw_name, sess.gid) != 0) {
-            perror("dinit: failed to set supplementary groups");
-            return;
-        }
-        if (setuid(sess.uid) != 0) {
-            perror("dinit: failed to set uid");
+        /* setup pam session */
+        pamh = dpam_begin(pw);
+        if (!pamh || !dpam_setup(pamh, pw)) {
             return;
         }
     }
@@ -168,12 +276,60 @@ bdir_done:
         }
     }
     argc = nexec;
-    /* environment starts here */
-    add_str("HOME=", sess.homedir);
-    add_str("UID=", sess.uids);
-    add_str("GID=", sess.gids);
-    add_str("PATH=/usr/local/bin:/usr/bin:/bin");
-    if (sess.rundir[0]) {
+    /* pam env vars take preference */
+    bool have_env_shell   = false, have_env_user   = false,
+         have_env_logname = false, have_env_home   = false,
+         have_env_uid     = false, have_env_gid    = false,
+         have_env_path    = false, have_env_rundir = false;
+    /* get them and loop */
+    if (pamh) {
+        /* this is a copy, but we exec so it's fine to leak */
+        char **penv = pam_getenvlist(pamh);
+        while (penv && *penv) {
+            /* ugly but it's not like putenv actually does anything else */
+            if (!strncmp(*penv, "SHELL=", 6)) {
+                have_env_shell = true;
+            } else if (!strncmp(*penv, "USER=", 5)) {
+                have_env_user = true;
+            } else if (!strncmp(*penv, "LOGNAME=", 8)) {
+                have_env_logname = true;
+            } else if (!strncmp(*penv, "HOME=", 5)) {
+                have_env_home = true;
+            } else if (!strncmp(*penv, "UID=", 4)) {
+                have_env_uid = true;
+            } else if (!strncmp(*penv, "GID=", 4)) {
+                have_env_gid = true;
+            } else if (!strncmp(*penv, "PATH=", 5)) {
+                have_env_path = true;
+            } else if (!strncmp(*penv, "XDG_RUNTIME_DIR=", 16)) {
+                have_env_rundir = true;
+            }
+            add_str(*penv);
+        }
+    }
+    /* add our environment defaults if not already set */
+    if (!have_env_shell) {
+        add_str("SHELL=" _PATH_BSHELL);
+    }
+    if (!have_env_user) {
+        add_str("USER=", pw->pw_name);
+    }
+    if (!have_env_logname) {
+        add_str("LOGNAME=", pw->pw_name);
+    }
+    if (!have_env_home) {
+        add_str("HOME=", sess.homedir);
+    }
+    if (!have_env_uid) {
+        add_str("UID=", sess.uids);
+    }
+    if (!have_env_gid) {
+        add_str("GID=", sess.gids);
+    }
+    if (!have_env_path) {
+        add_str("PATH=" _PATH_DEFPATH);
+    }
+    if (sess.rundir[0] && !have_env_rundir) {
         add_str("XDG_RUNTIME_DIR=", sess.rundir);
     }
     /* make up env and arg arrays */
@@ -193,8 +349,10 @@ bdir_done:
         argp.push_back(nullptr);
     }
     auto *argv = const_cast<char **>(&argp[0]);
-    /* restore umask to user default */
-    umask(022);
+    /* try change directory to home, but do not fail */
+    chdir(sess.homedir);
+    /* finish pam before execing */
+    dpam_finalize(pamh);
     /* fire */
-    execvpe("dinit", argv, argv + argc + 1);
+    execvpe(argv[0], argv, argv + argc + 1);
 }

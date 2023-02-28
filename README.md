@@ -79,6 +79,14 @@ instance of Dinit. Upon last logout in a session, the instance is stopped.
 The instance is supervised by the daemon and does not have access to any
 of the specific login environment (being shared between logins).
 
+The user instance is also set up with PAM. It does not perform any
+authentication (being started by a privileged daemon and as a part of
+the user's login) but it's still set up similarly to a reduced login
+session. That means it has its resource limits, umask and so on set
+up as if it was a login, and comes with a fresh set of environment
+variables. The shell profile is, however, not sourced (there is no
+shell being invoked).
+
 The login will not proceed until all user services have started or until
 a timeout has occured (configurable). This user instance will have an
 implicit `boot` service, which will wait for all services in the user's

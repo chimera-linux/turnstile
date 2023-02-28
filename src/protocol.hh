@@ -15,7 +15,9 @@
 #error "No RUN_PATH is defined"
 #endif
 
-#define SOCK_DIR "turnstiled"
+#define DPAM_SERVICE "turnstiled"
+
+#define SOCK_DIR DPAM_SERVICE
 #define DAEMON_SOCK RUN_PATH "/" SOCK_DIR "/control.sock"
 
 /* maximum length of a directory path we can receive */

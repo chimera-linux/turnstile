@@ -18,12 +18,14 @@
 
 #include <pwd.h>
 #include <unistd.h>
+#include <syslog.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
 #include <security/pam_modules.h>
 #include <security/pam_misc.h>
+#include <security/pam_ext.h>
 
 #include "protocol.hh"
 
@@ -38,8 +40,8 @@ static void free_sock(pam_handle_t *, void *data, int) {
 }
 
 static bool open_session(
-    pam_handle_t *pamh, unsigned int &uid, int, char const **,
-    unsigned int &orlen, char *orbuf, bool &set_rundir, bool &set_dbus
+    pam_handle_t *pamh, unsigned int &uid, unsigned int &orlen,
+    char *orbuf, bool &set_rundir, bool &set_dbus
 ) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
     if (!sock) {
@@ -262,6 +264,11 @@ err:
     return false;
 }
 
+/* this may get used later for something */
+static int open_session_turnstiled(pam_handle_t *) {
+    return PAM_SUCCESS;
+}
+
 extern "C" PAMAPI int pam_sm_open_session(
     pam_handle_t *pamh, int, int argc, char const **argv
 ) {
@@ -269,9 +276,14 @@ extern "C" PAMAPI int pam_sm_open_session(
     bool set_rundir = false, set_dbus = false;
     /* potential rundir we are managing */
     char rdir[DIRLEN_MAX + 1];
-    if (!open_session(
-        pamh, uid, argc, argv, rlen, rdir, set_rundir, set_dbus
-    )) {
+    if (argc > 0) {
+        if ((argc == 1) && !std::strcmp(argv[0], DPAM_SERVICE)) {
+            return open_session_turnstiled(pamh);
+        }
+        pam_syslog(pamh, LOG_ERR, "Invalid module arguments");
+        return PAM_SESSION_ERR;
+    }
+    if (!open_session(pamh, uid, rlen, rdir, set_rundir, set_dbus)) {
         return PAM_SESSION_ERR;
     }
     if (rlen) {

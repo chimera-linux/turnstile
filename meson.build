@@ -12,6 +12,8 @@ project(
 cpp = meson.get_compiler('cpp')
 
 pam_dep = dependency('pam', required: true)
+# could be openpam, in which case pam_misc is not present
+pam_misc_dep = dependency('pam_misc', required: false)
 rt_dep = cpp.find_library('rt', required: false)
 
 scdoc_dep = dependency('scdoc', version: '>=1.10', required: get_option('man'))
@@ -22,6 +24,8 @@ conf_data.set_quoted('CONF_PATH', join_paths(
     get_option('prefix'), get_option('sysconfdir')
 ))
 conf_data.set10('MANAGE_RUNDIR', get_option('manage_rundir'))
+
+conf_data.set('HAVE_PAM_MISC', pam_misc_dep.found())
 
 statepath = join_paths(
     get_option('prefix'), get_option('localstatedir'),
@@ -47,7 +51,7 @@ daemon = executable(
     'turnstiled', daemon_sources,
     include_directories: extra_inc,
     install: true,
-    dependencies: [rt_dep],
+    dependencies: [rt_dep, pam_dep, pam_misc_dep],
     gnu_symbol_visibility: 'hidden'
 )
 
@@ -62,8 +66,14 @@ pam_mod = shared_module(
 )
 
 install_data(
-    'turnstiled',
+    'data/dinit/turnstiled',
     install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
+    install_mode: 'rw-r--r--'
+)
+
+install_data(
+    'data/pam/turnstiled',
+    install_dir: join_paths(get_option('sysconfdir'), 'pam.d'),
     install_mode: 'rw-r--r--'
 )
 
