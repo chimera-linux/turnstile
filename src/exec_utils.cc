@@ -20,11 +20,11 @@
 #  define PAM_CONV_FUNC openpam_ttyconv
 #endif
 
-bool dinit_boot(session &sess, bool disabled) {
-    print_dbg("dinit: boot wait");
+bool srv_boot(session &sess, char const *backend) {
+    print_dbg("srv: startup wait");
     auto pid = fork();
     if (pid < 0) {
-        print_err("dinit: fork failed (%s)", strerror(errno));
+        print_err("srv: fork failed (%s)", strerror(errno));
         /* unrecoverable */
         return false;
     }
@@ -33,38 +33,43 @@ bool dinit_boot(session &sess, bool disabled) {
         sess.start_pid = pid;
         return true;
     }
-    if (disabled) {
-        /* if dinit is not managed, simply succeed immediately */
+    if (!backend) {
+        /* if service manager is not managed, simply succeed immediately */
         exit(0);
         return true;
     }
     /* child process */
     if (getuid() == 0) {
         if (setgid(sess.gid) != 0) {
-            print_err("dinit: failed to set gid (%s)", strerror(errno));
+            print_err("srv: failed to set gid (%s)", strerror(errno));
             exit(1);
         }
         if (setuid(sess.uid) != 0) {
-            print_err("dinit: failed to set uid (%s)", strerror(errno));
+            print_err("srv: failed to set uid (%s)", strerror(errno));
             exit(1);
         }
     }
-    execlp(
-        "dinitctl", "dinitctl",
-        "--socket-path", sess.csock, "start", "boot", nullptr
-    );
+    char buf[sizeof(LIBEXEC_PATH) + 128];
+    std::snprintf(buf, sizeof(buf), LIBEXEC_PATH "/%s", backend);
+    /* invoke shebangless to match "run" */
+    char const *arg0 = _PATH_BSHELL;
+    char const *rsl = std::strrchr(arg0, '/');
+    if (rsl) {
+        arg0 = rsl + 1;
+    }
+    execl(_PATH_BSHELL, arg0, buf, "ready", sess.srvstr.data(), nullptr);
     exit(1);
     return true;
 }
 
 static bool dpam_setup_groups(pam_handle_t *pamh, struct passwd *pwd) {
     if (initgroups(pwd->pw_name, pwd->pw_gid) != 0) {
-        perror("dinit: failed to set supplementary groups");
+        perror("srv: failed to set supplementary groups");
         return false;
     }
     auto pst = pam_setcred(pamh, PAM_ESTABLISH_CRED);
     if (pst != PAM_SUCCESS) {
-        perror("dinit: pam_setcred");
+        perror("srv: pam_setcred");
         pam_end(pamh, pst);
         return false;
     }
@@ -79,13 +84,13 @@ static pam_handle_t *dpam_begin(struct passwd *pwd) {
     pam_handle_t *pamh = nullptr;
     auto pst = pam_start(DPAM_SERVICE, pwd->pw_name, &cnv, &pamh);
     if (pst != PAM_SUCCESS) {
-        perror("dinit: pam_start");
+        perror("srv: pam_start");
         return nullptr;
     }
     /* set the originating user while at it */
     pst = pam_set_item(pamh, PAM_RUSER, "root");
     if (pst != PAM_SUCCESS) {
-        perror("dinit: pam_set_item(PAM_RUSER)");
+        perror("srv: pam_set_item(PAM_RUSER)");
         pam_end(pamh, pst);
         return nullptr;
     }
@@ -119,7 +124,7 @@ static bool dpam_open(pam_handle_t *pamh) {
 
     auto pst = pam_open_session(pamh, 0);
     if (pst != PAM_SUCCESS) {
-        perror("dinit: pam_open_session");
+        perror("srv: pam_open_session");
         pam_setcred(pamh, PAM_DELETE_CRED | PAM_SILENT);
         pam_end(pamh, pst);
         return false;
@@ -133,11 +138,11 @@ static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
     }
     /* change identity */
     if (setgid(pwd->pw_uid) != 0) {
-        perror("dinit: failed to set gid");
+        perror("srv: failed to set gid");
         return false;
     }
     if (setuid(pwd->pw_gid) != 0) {
-        perror("dinit: failed to set uid");
+        perror("srv: failed to set uid");
         return false;
     }
     return true;
@@ -155,14 +160,14 @@ static void dpam_finalize(pam_handle_t *pamh) {
     pam_end(pamh, PAM_SUCCESS | PAM_DATA_SILENT);
 }
 
-void dinit_child(session &sess, char const *pipenum) {
+void srv_child(session &sess, char const *backend, char const *pipenum) {
     auto *pw = getpwuid(sess.uid);
     if (!pw) {
-        perror("dinit: getpwuid failed");
+        perror("srv: getpwuid failed");
         return;
     }
     if ((pw->pw_uid != sess.uid) || (pw->pw_gid != sess.gid)) {
-        fputs("dinit: uid/gid does not match user", stderr);
+        fputs("srv: uid/gid does not match user", stderr);
         return;
     }
     pam_handle_t *pamh = nullptr;
@@ -173,84 +178,18 @@ void dinit_child(session &sess, char const *pipenum) {
             return;
         }
     }
-    /* set up dinit tempdir after we drop privileges */
+    /* set up service manager tempdir after we drop privileges */
     char tdirn[38];
     std::snprintf(
-        tdirn, sizeof(tdirn), "dinit.%lu",
+        tdirn, sizeof(tdirn), "srv.%lu",
         static_cast<unsigned long>(getpid())
     );
     int tdirfd = dir_make_at(sess.dirfd, tdirn, 0700);
     if (tdirfd < 0) {
-        perror("dinit: failed to create dinit dir");
+        perror("srv: failed to create state dir");
         return;
     }
-    /* set up service files */
-    {
-        auto bfd = openat(tdirfd, "boot", O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (bfd < 0) {
-            perror("dinit: openat failed");
-            return;
-        }
-        /* reopen as a real file handle, now owns bfd */
-        auto *f = fdopen(bfd, "w");
-        if (!f) {
-            perror("dinit: fdopen failed");
-            return;
-        }
-        /* write boot service */
-        std::fprintf(f, "type = internal\n");
-        /* system service dependency */
-        std::fprintf(f, "depends-on = system\n");
-        /* wait for a service directory */
-        std::fprintf(
-            f, "waits-for.d = %s/%s\n", sess.homedir,
-            cdata->boot_path.data()
-        );
-        std::fclose(f);
-        /* now system */
-        bfd = openat(tdirfd, "system", O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (bfd < 0) {
-            perror("dinit: openat failed");
-            return;
-        }
-        /* ditto */
-        f = fdopen(bfd, "w");
-        if (!f) {
-            perror("dinit: fdopen failed");
-            return;
-        }
-        /* this is also internal */
-        std::fprintf(f, "type = internal\n");
-        /* wait for system service directory */
-        std::fprintf(f, "waits-for.d = %s\n", cdata->sys_boot_path.data());
-        std::fclose(f);
-    }
-    /* create boot path, if possible; if it fails, it fails (harmless-ish) */
-    int hfd = open(sess.homedir, O_RDONLY);
-    if (struct stat hstat; !fstat(hfd, &hstat) && S_ISDIR(hstat.st_mode)) {
-        char *bptr = &cdata->boot_path[0];
-        /* boot dir already exists */
-        if (!fstatat(hfd, bptr, &hstat, 0) && S_ISDIR(hstat.st_mode)) {
-            goto bdir_done;
-        }
-        /* otherwise recursively create it */
-        char *sl = std::strchr(bptr, '/');
-        while (sl) {
-            *sl = '\0';
-            if (fstatat(hfd, bptr, &hstat, 0) || !S_ISDIR(hstat.st_mode)) {
-                if (mkdirat(hfd, bptr, 0755)) {
-                    *sl = '/';
-                    goto bdir_done;
-                }
-            }
-            *sl = '/';
-            sl = strchr(sl + 1, '/');
-        }
-        /* actually create the dir itself */
-        mkdirat(hfd, bptr, 0755);
-    }
-bdir_done:
-    close(hfd);
+    close(tdirfd);
     /* build up env and args list */
     std::vector<char> execs{};
     std::size_t argc = 0, nexec = 0;
@@ -259,22 +198,23 @@ bdir_done:
         execs.push_back('\0');
         ++nexec;
     };
-    /* argv starts here */
-    add_str("dinit");
-    add_str("--user");
-    add_str("--ready-fd");
-    add_str(pipenum);
-    add_str("--services-dir");
-    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
-    /* onwards */
-    for (auto &sp: cdata->srv_paths) {
-        add_str("--services-dir");
-        if (sp.data()[0] != '/') {
-            add_str(sess.homedir, "/", sp.data());
-        } else {
-            add_str(sp.data());
-        }
+    /* argv starts here; we run a "login shell" */
+    char const *arg0 = _PATH_BSHELL;
+    char const *rsl = std::strrchr(arg0, '/');
+    if (rsl) {
+        arg0 = rsl + 1;
     }
+    add_str("-", arg0);
+    /* path to run script */
+    add_str(LIBEXEC_PATH, "/", backend);
+    /* arg1: action */
+    add_str("run");
+    /* arg1: ready_fd */
+    add_str(pipenum);
+    /* arg2: srvdir */
+    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
+    /* arg3: confdir */
+    add_str(CONF_PATH, "/backend");
     argc = nexec;
     /* pam env vars take preference */
     bool have_env_shell   = false, have_env_user   = false,
@@ -354,5 +294,5 @@ bdir_done:
     /* finish pam before execing */
     dpam_finalize(pamh);
     /* fire */
-    execvpe(argv[0], argv, argv + argc + 1);
+    execve(_PATH_BSHELL, argv, argv + argc + 1);
 }

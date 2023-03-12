@@ -56,7 +56,7 @@ static bool open_session(
 
     /* associate the socket with the session */
     if (pam_set_data(
-        pamh, "pam_dinit_session", sock, free_sock
+        pamh, "pam_turnstile_session", sock, free_sock
     ) != PAM_SUCCESS) {
         return false;
     }
@@ -322,7 +322,7 @@ extern "C" PAMAPI int pam_sm_close_session(
 ) {
     void const *data;
     /* there is nothing we can do here */
-    if (pam_get_data(pamh, "pam_dinit_session", &data) != PAM_SUCCESS) {
+    if (pam_get_data(pamh, "pam_turnstile_session", &data) != PAM_SUCCESS) {
         return PAM_SUCCESS;
     }
     int sock = *static_cast<int const *>(data);

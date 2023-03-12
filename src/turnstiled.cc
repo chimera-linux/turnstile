@@ -1,5 +1,5 @@
-/* turnstiled: handle incoming session requests and start
- *             (or stop) dinit user instances as necessary
+/* turnstiled: handle incoming session requests and start (or
+ *             stop) service manager instances as necessary
  *
  * the daemon should never exit under "normal" circumstances
  *
@@ -37,9 +37,9 @@
 
 #define DEFAULT_CFG_PATH CONF_PATH "/turnstiled.conf"
 
-/* when stopping dinit, we first do a SIGTERM and set up this timeout,
- * if it fails to quit within that period, we issue a SIGKILL and try
- * this timeout again, after that it is considered unrecoverable
+/* when stopping service manager, we first do a SIGTERM and set up this
+ * timeout, if it fails to quit within that period, we issue a SIGKILL
+ * and try this timeout again, after that it is considered unrecoverable
  */
 static constexpr std::time_t kill_timeout = 60;
 
@@ -69,10 +69,10 @@ struct pending_conn {
 };
 
 session::session() {
-    sockptr = csock;
     timer_sev.sigev_notify = SIGEV_SIGNAL;
     timer_sev.sigev_signo = SIGALRM;
     timer_sev.sigev_value.sival_ptr = this;
+    srvstr.reserve(256);
 }
 
 session::~session() {
@@ -119,8 +119,8 @@ static std::size_t npipes = 0;
 /* control IPC socket */
 static int ctl_sock;
 
-/* dummy "dinit" child process if disabled */
-static void dinit_dummy(int pipew) {
+/* dummy "service manager" child process with none backend */
+static void srv_dummy(int pipew) {
     /* we're always ready, the dummy process just sleeps forever */
     if (write(pipew, "poke", 5) != 5) {
         perror("dummy: failed to poke the pipe");
@@ -139,29 +139,29 @@ static void dinit_dummy(int pipew) {
     exit(0);
 }
 
-/* start the dinit instance for a session */
-static bool dinit_start(session &sess) {
+/* start the service manager instance for a session */
+static bool srv_start(session &sess) {
     int dpipe[2];
     /* mark as waiting */
-    sess.dinit_wait = true;
+    sess.srv_wait = true;
     /* make rundir if needed, we don't want to create that and session dir
      * any earlier than here as here we are sure the previous instance has
      * definitely terminated and stuff like session dirfd is actually clear
      */
     if (cdata->manage_rdir) {
-        print_dbg("dinit: setup rundir for %u", sess.uid);
+        print_dbg("srv: setup rundir for %u", sess.uid);
         if (!rundir_make(sess.rundir, sess.uid, sess.gid)) {
             return false;
         }
     }
     /* set up session dir */
     if (!cdata->disable) {
-        print_dbg("dinit: create session dir for %u", sess.uid);
+        print_dbg("srv: create session dir for %u", sess.uid);
         /* make the directory itself */
         sess.dirfd = dir_make_at(userv_dirfd, sess.uids, 0700);
         if (sess.dirfd < 0) {
             print_err(
-                "dinit: failed to make session dir for %u (%s)",
+                "srv: failed to make session dir for %u (%s)",
                 sess.uid, strerror(errno)
             );
             return false;
@@ -171,7 +171,7 @@ static bool dinit_start(session &sess) {
             userv_dirfd, sess.uids, sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
         ) || fcntl(sess.dirfd, F_SETFD, FD_CLOEXEC)) {
             print_err(
-                "dinit: session dir setup failed for %u (%s)",
+                "srv: session dir setup failed for %u (%s)",
                 sess.uid, strerror(errno)
             );
             if (dir_clear_contents(sess.dirfd)) {
@@ -180,40 +180,40 @@ static bool dinit_start(session &sess) {
             return false;
         }
     }
-    /* here we'll receive the dinit socket path once ready to take commands */
+    /* here we'll receive the initial readiness string from the backend */
     if (pipe2(dpipe, O_NONBLOCK) < 0) {
-        print_err("dinit: pipe failed (%s)", strerror(errno));
+        print_err("srv: pipe failed (%s)", strerror(errno));
         return false;
     }
     /* set up the timer, issue SIGLARM when it fires */
-    print_dbg("dinit: timer set");
-    if (cdata->dinit_timeout > 0) {
-        if (!sess.arm_timer(cdata->dinit_timeout)) {
+    print_dbg("srv: timer set");
+    if (cdata->login_timeout > 0) {
+        if (!sess.arm_timer(cdata->login_timeout)) {
             return false;
         }
     } else {
-        print_dbg("dinit: no timeout");
+        print_dbg("srv: no timeout");
     }
-    /* launch dinit */
-    print_dbg("dinit: launch");
+    /* launch service manager */
+    print_dbg("srv: launch");
     auto pid = fork();
     if (pid == 0) {
         if (cdata->disable) {
-            dinit_dummy(dpipe[1]);
+            srv_dummy(dpipe[1]);
             exit(1);
         }
         char pipestr[32];
         std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe[1]);
-        dinit_child(sess, pipestr);
+        srv_child(sess, cdata->backend.data(), pipestr);
         exit(1);
     } else if (pid < 0) {
-        print_err("dinit: fork failed (%s)", strerror(errno));
+        print_err("srv: fork failed (%s)", strerror(errno));
         return false;
     }
     /* close the write end on our side */
     close(dpipe[1]);
-    sess.dinit_pending = false;
-    sess.dinit_pid = pid;
+    sess.srv_pending = false;
+    sess.srv_pid = pid;
     sess.userpipe = dpipe[0];
     sess.pipe_queued = true;
     return true;
@@ -373,21 +373,21 @@ static bool handle_read(int fd) {
                 print_dbg("msg: no session for %u", msg);
                 return msg_send(fd, MSG_ERR);
             }
-            if (!sess->dinit_wait) {
+            if (!sess->srv_wait) {
                 /* already started, reply with ok */
                 print_dbg("msg: done");
                 return msg_send(
                     fd, MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE)
                 );
             } else {
-                if (sess->dinit_pid == -1) {
+                if (sess->srv_pid == -1) {
                     if (sess->term_pid != -1) {
-                        /* we are still waiting for old dinit to terminate */
-                        print_dbg("msg: still waiting for old dinit term");
-                        sess->dinit_pending = true;
+                        /* still waiting for old service manager to die */
+                        print_dbg("msg: still waiting for old srv term");
+                        sess->srv_pending = true;
                     } else {
                         print_dbg("msg: start service manager");
-                        if (!dinit_start(*sess)) {
+                        if (!srv_start(*sess)) {
                             return false;
                         }
                     }
@@ -511,22 +511,22 @@ static bool conn_term_sess(session &sess, int conn) {
         sess.conns.erase(cit);
         /* empty now; shut down session */
         if (sess.conns.empty() && !check_linger(sess)) {
-            print_dbg("dinit: stop");
-            if (sess.dinit_pid != -1) {
-                print_dbg("dinit: term");
-                kill(sess.dinit_pid, SIGTERM);
-                sess.term_pid = sess.dinit_pid;
+            print_dbg("srv: stop");
+            if (sess.srv_pid != -1) {
+                print_dbg("srv: term");
+                kill(sess.srv_pid, SIGTERM);
+                sess.term_pid = sess.srv_pid;
                 /* just in case */
                 sess.arm_timer(kill_timeout);
             } else {
-                /* if no dinit, drop the dir early; otherwise wait
-                 * because we need to remove the boot service first
+                /* if no service manager, drop the dir early; otherwise
+                 * wait because we need to remove the boot service first
                  */
                 sess.remove_sdir();
             }
-            sess.dinit_pid = -1;
+            sess.srv_pid = -1;
             sess.start_pid = -1;
-            sess.dinit_wait = true;
+            sess.srv_wait = true;
         }
         close(conn);
         return true;
@@ -609,12 +609,12 @@ static bool sig_handle_alrm(void *data) {
     if (sess.term_pid != -1) {
         if (sess.kill_tried) {
             print_err(
-                "turnstiled: dinit process %ld refused to die",
+                "turnstiled: service manager process %ld refused to die",
                 static_cast<long>(sess.term_pid)
             );
             return false;
         }
-        /* we are waiting for dinit to die and it did not die, attempt kill */
+        /* waiting for service manager to die and it did not die, try kill */
         kill(sess.term_pid, SIGKILL);
         sess.kill_tried = true;
         /* re-arm the timer, if that fails again, we give up */
@@ -642,36 +642,36 @@ static bool sig_handle_alrm(void *data) {
  *
  * can happen for 3 things:
  *
- * the dinit instance which is still supposed to be running, in which case
- * we attempt to restart it (except if it never signaled readiness, in which
- * case we give up, as we'd likely loop forever)
+ * the service manager instance which is still supposed to be running, in
+ * which case we attempt to restart it (except if it never signaled readiness,
+ * in which case we give up, as we'd likely loop forever)
  *
- * the dinitctl start job, which waits for the bootup to finish, and is run
- * once dinit has opened its control socket; in those cases we notify all
- * pending connections and disarm the timeout (and mark the session ready)
+ * the readiness job, which waits for the bootup to finish, and is run once
+ * the service manager has opened its control socket; in those cases we notify
+ * all pending connections and disarm the timeout (and mark the session ready)
  *
- * or the dinit instance which has stopped (due to logout typically), in
- * which case we take care of removing the generated service directory and
+ * or the service manager instance which has stopped (due to logout typically),
+ * in which case we take care of removing the generated service directory and
  * possibly clear the rundir (if managed)
  */
-static bool dinit_reaper(pid_t pid) {
-    print_dbg("dinit: check for restarts");
+static bool srv_reaper(pid_t pid) {
+    print_dbg("srv: check for restarts");
     for (auto &sess: sessions) {
-        if (pid == sess.dinit_pid) {
-            sess.dinit_pid = -1;
+        if (pid == sess.srv_pid) {
+            sess.srv_pid = -1;
             sess.start_pid = -1; /* we don't care anymore */
-            if (sess.dinit_wait) {
+            if (sess.srv_wait) {
                 /* failed without ever having signaled readiness
                  * this indicates that we'd probably just loop forever,
                  * so bail out
                  */
-                 print_err("dinit: died without notifying readiness");
+                 print_err("srv: died without notifying readiness");
                  return false;
             }
-            return dinit_start(sess);
+            return srv_start(sess);
         } else if (pid == sess.start_pid) {
             /* reaping service startup jobs */
-            print_dbg("dinit: ready notification");
+            print_dbg("srv: ready notification");
             unsigned int msg = MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE);
             for (auto c: sess.conns) {
                 if (send(c, &msg, sizeof(msg), 0) < 0) {
@@ -679,10 +679,10 @@ static bool dinit_reaper(pid_t pid) {
                 }
             }
             /* disarm an associated timer */
-            print_dbg("dinit: disarm timer");
+            print_dbg("srv: disarm timer");
             sess.disarm_timer();
             sess.start_pid = -1;
-            sess.dinit_wait = false;
+            sess.srv_wait = false;
         } else if (pid == sess.term_pid) {
             /* if there was a timer on the session, safe to drop it now */
             sess.disarm_timer();
@@ -696,8 +696,8 @@ static bool dinit_reaper(pid_t pid) {
             }
             sess.term_pid = -1;
             sess.kill_tried = false;
-            if (sess.dinit_pending) {
-                return dinit_start(sess);
+            if (sess.srv_pending) {
+                return srv_start(sess);
             }
         }
     }
@@ -711,9 +711,9 @@ static bool sig_handle_chld() {
     /* reap */
     while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
         /* deal with each pid here */
-        if (!dinit_reaper(wpid)) {
+        if (!srv_reaper(wpid)) {
             print_err(
-                "turnstiled: failed to restart dinit (%u)\n",
+                "turnstiled: failed to restart service manager (%u)\n",
                 static_cast<unsigned int>(wpid)
             );
             /* this is an unrecoverable condition */
@@ -740,19 +740,13 @@ static bool fd_handle_pipe(std::size_t i) {
         return false;
     }
     if (fds[i].revents & POLLIN) {
-        auto *endp = &sess->csock[sizeof(sess->csock) - 1];
-        /* read the socket path */
+        /* read the string from the pipe */
         for (;;) {
-            if (sess->sockptr == endp) {
-                /* just in case, break off reading past the limit */
-                char b;
-                /* eat whatever else is in the pipe */
-                while (read(fds[i].fd, &b, 1) == 1) {}
+            char c;
+            if (read(fds[i].fd, &c, 1) != 1) {
                 break;
             }
-            if (read(fds[i].fd, sess->sockptr++, 1) != 1) {
-                break;
-            }
+            sess->srvstr.push_back(c);
         }
     }
     if (fds[i].revents & POLLHUP) {
@@ -765,18 +759,19 @@ static bool fd_handle_pipe(std::size_t i) {
         fds[i].revents = 0;
         --npipes;
         /* but error early if needed */
-        if (!sess->csock[0]) {
+        if (sess->srvstr.empty()) {
             print_err("read failed (%s)", strerror(errno));
             return true;
         }
         /* wait for the boot service to come up */
-        if (!dinit_boot(*sess, cdata->disable)) {
+        if (!srv_boot(
+            *sess, cdata->disable ? nullptr : cdata->backend.data()
+        )) {
             /* this is an unrecoverable condition */
             return false;
         }
         /* reset the buffer for next time */
-        sess->sockptr = sess->csock;
-        std::memset(sess->csock, 0, sizeof(sess->csock));
+        sess->srvstr.clear();
     }
     return true;
 }
@@ -893,7 +888,7 @@ int main(int argc, char **argv) {
         }
         close(dfd);
     }
-    /* ensure it is not accessible by dinit child processes */
+    /* ensure it is not accessible by service manager child processes */
     if (fcntl(userv_dirfd, F_SETFD, FD_CLOEXEC)) {
         print_err("fcntl failed (%s)", strerror(errno));
         return 1;

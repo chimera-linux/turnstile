@@ -80,8 +80,6 @@ void cfg_read(char const *cfgpath) {
         /* supported config lines */
         if (!std::strcmp(bufp, "debug")) {
             read_bool("debug", ass, cdata->debug);
-        } else if (!std::strcmp(bufp, "disable")) {
-            read_bool("disable", ass, cdata->disable);
         } else if (!std::strcmp(bufp, "debug_stderr")) {
             read_bool("debug_stderr", ass, cdata->debug_stderr);
         } else if (!std::strcmp(bufp, "manage_rundir")) {
@@ -96,6 +94,18 @@ void cfg_read(char const *cfgpath) {
                 read_bool("linger", ass, cdata->linger);
                 cdata->linger_never = !cdata->linger;
             }
+        } else if (!std::strcmp(bufp, "backend")) {
+            if (!std::strcmp(ass, "none")) {
+                cdata->backend.clear();
+                cdata->disable = true;
+            } else if (!std::strlen(ass)) {
+                syslog(
+                    LOG_WARNING,
+                    "Invalid config value for '%s' (must be non-empty)", bufp
+                );
+            } else {
+                cdata->backend = ass;
+            }
         } else if (!std::strcmp(bufp, "rundir_path")) {
             cdata->rdir_path = ass;
         } else if (!std::strcmp(bufp, "login_timeout")) {
@@ -108,22 +118,8 @@ void cfg_read(char const *cfgpath) {
                     ass, bufp
                 );
             } else {
-                cdata->dinit_timeout = time_t(tout);
+                cdata->login_timeout = time_t(tout);
             }
-        } else if (!std::strcmp(bufp, "boot_dir")) {
-            if (ass[0] == '/') {
-                syslog(
-                    LOG_WARNING,
-                    "Invalid config value '%s' for '%s' (must be relative)",
-                    ass, bufp
-                );
-            } else {
-                cdata->boot_path = ass;
-            }
-        } else if (!std::strcmp(bufp, "system_boot_dir")) {
-            cdata->sys_boot_path = ass;
-        } else if (!std::strcmp(bufp, "services_dir")) {
-            cdata->srv_paths.push_back(ass);
         }
     }
 }
@@ -215,21 +211,4 @@ writenum:
     }
     *dest = '\0';
     return true;
-}
-
-/* service directory paths defaults */
-static constexpr char const *servpaths[] = {
-    ".config/dinit.d",
-    "/etc/dinit.d/user",
-    "/usr/local/lib/dinit.d/user",
-    "/usr/lib/dinit.d/user",
-};
-
-void cfg_populate_srvdirs() {
-    if (cdata->srv_paths.empty()) {
-        auto npaths = sizeof(servpaths) / sizeof(*servpaths);
-        for (std::size_t i = 0; i < npaths; ++i) {
-            cdata->srv_paths.push_back(servpaths[i]);
-        }
-    }
 }

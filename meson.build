@@ -21,7 +21,7 @@ scdoc_dep = dependency('scdoc', version: '>=1.10', required: get_option('man'))
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
 conf_data.set_quoted('CONF_PATH', join_paths(
-    get_option('prefix'), get_option('sysconfdir')
+    get_option('prefix'), get_option('sysconfdir'), 'turnstile'
 ))
 conf_data.set10('MANAGE_RUNDIR', get_option('manage_rundir'))
 
@@ -35,6 +35,9 @@ lingerpath = join_paths(statepath, 'linger')
 
 conf_data.set_quoted('STATE_PATH', statepath)
 conf_data.set_quoted('LINGER_PATH', lingerpath)
+conf_data.set_quoted('LIBEXEC_PATH', join_paths(
+    get_option('prefix'), get_option('libexecdir'), 'turnstile'
+))
 
 configure_file(output: 'config.hh', configuration: conf_data)
 
@@ -44,7 +47,7 @@ daemon_sources = [
     'src/turnstiled.cc',
     'src/fs_utils.cc',
     'src/cfg_utils.cc',
-    'src/dinit_utils.cc',
+    'src/exec_utils.cc',
 ]
 
 daemon = executable(
@@ -93,7 +96,7 @@ configure_file(
     output: 'turnstiled.conf',
     configuration: uconf_data,
     install: true,
-    install_dir: get_option('sysconfdir'),
+    install_dir: join_paths(get_option('sysconfdir'), 'turnstile'),
     install_mode: 'rw-r--r--'
 )
 
@@ -134,3 +137,5 @@ if get_option('man')
         )
     endforeach
 endif
+
+subdir('backend')

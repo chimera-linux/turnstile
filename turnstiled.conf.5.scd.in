@@ -36,37 +36,16 @@ accept more values.
 	Whether to output debug information. This is verbose logging that is
 	only useful when investigating issues.
 
-*disable* (boolean: _no_)
-	Whether to disable user service handling. If set to yes, no dinit
-	instances will be spawned, but the daemon will still perform login
-	tracking and auxiliary tasks such as rundir management.
+*backend* (string: _dinit_)
+	The service backend to use. The default and currently the only shipped
+	backend is dinit, but others may be implemented.
+
+	Can also be set to _none_ to disable the service backend. In that case,
+	nothing will be spawned, but the daemon will still perform login tracking
+	and auxiliary tasks such as rundir management.
 
 *debug\_stderr* (boolean: _no_)
 	Whether to print debug messages also to stderr.
-
-*boot\_dir* (string: _.config/dinit.d/boot.d_)
-	The directory containing service links that must be started in order
-	for the login to proceed. Can be empty, in which case nothing is waited
-	for. Relative to the home directory.
-
-*system\_boot\_dir* (string: _/usr/lib/dinit.d/user/boot.d_)
-	This is just like boot_dir, but not controlled by the user. Instead, the
-	system installs links there, and they are started for all users
-	universally.
-
-*services\_dir* (string)
-	A directory user service files are read from. Can be set multiple times,
-	in which case multiple service directories will be used. Relative paths
-	are within the user's home directory. The ordering matters, as earlier
-	directories will be checked first.
-
-	If no directory is set in the config file, a default list is used, which
-	consists of the following:
-
-	- .config/dinit.d
-	- /etc/dinit.d/user
-	- /usr/local/lib/dinit.d/user
-	- /usr/lib/dinit.d/user
 
 *linger* (combo: _maybe_)
 	Whether to keep already started services running even after the last login

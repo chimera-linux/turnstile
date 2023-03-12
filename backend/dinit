@@ -1,0 +1,109 @@
+#!/bin/sh
+#
+# This is the turnstile dinit backend. It accepts the action as its first
+# argument, which is either "ready" or "run". In case of "run", it's invoked
+# directly through /bin/sh as if it was a login shell, and therefore it has
+# acccess to shell profile, and the shebang is functionally useless but
+# should be preserved as a convention. For "ready", it's a regular shell.
+#
+# It also serves as an example of how to implement such backend.
+#
+# Arguments for "ready":
+#
+# socket:   the path to dinit's control socket; it is the string that is
+#           written by dinit into ready_fd for the "run" part of the process
+#
+# Arguments for "run":
+#
+# ready_fd: file descriptor that should be poked with a string; this will
+#           be passed to the "ready" script of the sequence as its sole
+#           argument (here this is a control socket path)
+# srvdir:   an internal directory that can be used by the service manager
+#           for any purpose (usually to keep track of its state)
+# confdir:  the path where turnstile's configuration data reside, used
+#           to source the configuration file
+#
+# How the script manages its configuration and so on is up to the script.
+#
+# Note that the script *must* exec the service manager directly, i.e. the
+# service manager must fully replace the shell process for this to work.
+#
+# Copyright 2023 Daniel "q66" Kolesa <q66@chimera-linux.org>
+# License: BSD-2-Clause
+#
+
+case "$1" in
+    run) ;;
+    ready)
+        if [ -z "$2" -o ! -S "$2" ]; then
+            # must be a control socket
+            echo "dinit: invalid control socket '$2'" >&2
+            exit 69
+        fi
+        exec dinitctl --socket-path "$2" start boot
+        ;;
+    *)
+        exit 32
+        ;;
+esac
+
+DINIT_READY_FD="$2"
+DINIT_DIR="$3"
+DINIT_CONF="$4/dinit.conf"
+
+if [ -z "$DINIT_READY_FD" -o -z "$DINIT_DIR" -o ! -d "$DINIT_DIR" ]; then
+    echo "dinit: invalid input argument(s)" >&2
+    exit 69
+fi
+
+if [ -z "$HOME" -o ! -d "$HOME" ]; then
+    echo "dinit: invalid home directory" >&2
+    exit 70
+fi
+
+shift $#
+
+# be strict
+set -e
+
+# source the conf
+[ -r "$DINIT_CONF" ] && . "$DINIT_CONF"
+
+# set a bunch of defaults in case the conf cannot be read or is mangled
+
+[ -z "$boot_dir" ] && boot_dir="${HOME}/.config/dinit.d/boot.d"
+[ -z "$system_boot_dir" ] && system_boot_dir="/usr/lib/dinit.d/user/boot.d"
+
+if [ -z "$services_dir1" ]; then
+    services_dir1="${HOME}/.config/dinit.d"
+    services_dir2="/etc/dinit.d/user"
+    services_dir3="/usr/local/lib/dinit.d/user"
+    services_dir4="/usr/lib/dinit.d/user"
+fi
+
+# translate service dirs to arguments; we pass them to dinit at the end
+seqn=1
+while :; do
+    eval curserv="\$services_dir$seqn"
+    [ -n "$curserv" ] || break
+    set -- "$@" --services-dir "$curserv"
+    seqn=$(($seqn + 1))
+done
+
+# create boot dir, but make it not a failure if we can't
+mkdir -p "${boot_dir}" > /dev/null 2>&1 || :
+
+# this must succeed
+cat << EOF > "${DINIT_DIR}/boot"
+type = internal
+depends-on = system
+waits-for.d = ${boot_dir}
+EOF
+
+# this must also succeed
+cat << EOF > "${DINIT_DIR}/system"
+type = internal
+waits-for.d = ${system_boot_dir}
+EOF
+
+exec dinit --user --ready-fd "$DINIT_READY_FD" --services-dir "$DINIT_DIR" "$@"

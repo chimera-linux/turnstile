@@ -23,17 +23,15 @@
 struct session {
     /* a list of connection file descriptors for this session */
     std::vector<int> conns{};
+    /* the string the backend 'run' hands over to 'ready' */
+    std::string srvstr{};
     /* home directory path received from the PAM module */
     char *homedir = nullptr;
-    /* points to a place within csock, used to keep track
-     * when reading the socket path off the userpipe
-     */
-    char *sockptr = nullptr;
-    /* the PID of the dinit process we are currently managing */
-    pid_t dinit_pid = -1;
-    /* the PID of the dinitctl process that reports final readiness */
+    /* the PID of the service manager process we are currently managing */
+    pid_t srv_pid = -1;
+    /* the PID of the backend "ready" process that reports final readiness */
     pid_t start_pid = -1;
-    /* the PID of the dinit process that is currently dying */
+    /* the PID of the service manager process that is currently dying */
     pid_t term_pid = -1;
     /* session timer; there can be only one per session */
     timer_t timer{};
@@ -41,14 +39,16 @@ struct session {
     /* user and group IDs read off the first connection */
     unsigned int uid = 0;
     unsigned int gid = 0;
-    /* the read end of the pipe that dinit uses to signal command readiness */
+    /* the read end of the pipe that the service manager uses to signal
+     * command readiness
+     */
     int userpipe = -1;
     /* session directory descriptor */
     int dirfd = -1;
-    /* true unless dinit_pid has completely finished starting */
-    bool dinit_wait = true;
+    /* true unless srv_pid has completely finished starting */
+    bool srv_wait = true;
     /* false unless waiting for term_pid to quit before starting again */
-    bool dinit_pending = false;
+    bool srv_pending = false;
     /* whether to manage XDG_RUNTIME_DIR (typically false) */
     bool manage_rdir = false;
     /* whether the timer is actually currently set up */
@@ -59,8 +59,6 @@ struct session {
     bool pipe_queued = false;
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
-    /* dinit control socket path, read off userpipe */
-    char csock[sizeof(sockaddr_un{}.sun_path)];
     /* string versions of uid and gid */
     char uids[32], gids[32];
 
@@ -83,14 +81,13 @@ bool cfg_expand_rundir(
     char *dest, std::size_t destsize, char const *tmpl,
     char const *uid, char const *gid
 );
-void cfg_populate_srvdirs();
 
-/* dinit utilities */
-void dinit_child(session &sess, char const *pipenum);
-bool dinit_boot(session &sess, bool disabled);
+/* service manager utilities */
+void srv_child(session &sess, char const *backend, char const *pipenum);
+bool srv_boot(session &sess, char const *backend);
 
 struct cfg_data {
-    time_t dinit_timeout = 60;
+    time_t login_timeout = 60;
     bool debug = false;
     bool disable = false;
     bool debug_stderr = false;
@@ -98,10 +95,8 @@ struct cfg_data {
     bool export_dbus = true;
     bool linger = false;
     bool linger_never = false;
+    std::string backend = "dinit";
     std::string rdir_path = RUN_PATH "/user/%u";
-    std::string boot_path = ".config/dinit.d/boot.d";
-    std::string sys_boot_path = "/usr/lib/dinit.d/user/boot.d";
-    std::vector<std::string> srv_paths{};
 };
 
 extern cfg_data *cdata;
