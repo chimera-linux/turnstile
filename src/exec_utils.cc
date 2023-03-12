@@ -137,11 +137,11 @@ static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
         return false;
     }
     /* change identity */
-    if (setgid(pwd->pw_uid) != 0) {
+    if (setgid(pwd->pw_gid) != 0) {
         perror("srv: failed to set gid");
         return false;
     }
-    if (setuid(pwd->pw_gid) != 0) {
+    if (setuid(pwd->pw_uid) != 0) {
         perror("srv: failed to set uid");
         return false;
     }
