@@ -61,6 +61,8 @@ linger = maybe
 # and substituted in the string. Set to empty string if
 # you want to prevent it from being exported altogether.
 #
+# It must not end with a slash or be relative or just '/'.
+#
 # If you are using elogind, you should not mess with this
 # path, and doing so will result in subtly broken systems.
 # You should in general not mess with this path.

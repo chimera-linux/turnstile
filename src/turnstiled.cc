@@ -339,7 +339,7 @@ static bool handle_session_new(
     sess->gid = it.gid;
     std::free(sess->homedir);
     sess->homedir = it.homedir;
-    sess->manage_rdir = cdata->manage_rdir;
+    sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];
     it.homedir = nullptr;
     done = true;
     /* reply */
@@ -876,7 +876,7 @@ int main(int argc, char **argv) {
 
     {
         struct stat pstat;
-        int dfd = open(RUN_PATH, O_RDONLY);
+        int dfd = open(RUN_PATH, O_RDONLY | O_NOFOLLOW);
         /* ensure the base path exists and is a directory */
         if (fstat(dfd, &pstat) || !S_ISDIR(pstat.st_mode)) {
             print_err("turnstiled base path does not exist");

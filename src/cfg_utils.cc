@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <climits>
+#include <utility>
 
 #include "turnstiled.hh"
 
@@ -107,7 +108,15 @@ void cfg_read(char const *cfgpath) {
                 cdata->backend = ass;
             }
         } else if (!std::strcmp(bufp, "rundir_path")) {
-            cdata->rdir_path = ass;
+            std::string rp = ass;
+            if (!rp.empty() && ((rp.back() == '/') || (rp.front() != '/'))) {
+                syslog(
+                    LOG_WARNING,
+                    "Invalid config value for '%s' (%s)", bufp, rp
+                );
+            } else {
+                cdata->rdir_path = std::move(rp);
+            }
         } else if (!std::strcmp(bufp, "login_timeout")) {
             char *endp = nullptr;
             auto tout = std::strtoul(ass, &endp, 10);
