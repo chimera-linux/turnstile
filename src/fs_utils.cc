@@ -13,42 +13,40 @@
 int dir_make_at(int dfd, char const *dname, mode_t mode) {
     int sdfd = openat(dfd, dname, O_RDONLY | O_NOFOLLOW);
     struct stat st;
+    int reterr = 0;
     if (fstat(sdfd, &st) || !S_ISDIR(st.st_mode)) {
         close(sdfd);
         if (mkdirat(dfd, dname, mode)) {
-            return -1;
+            goto ret_err;
         }
         sdfd = openat(dfd, dname, O_RDONLY | O_NOFOLLOW);
-        if (sdfd < 0) {
-            return -1;
-        }
-        if (fstat(sdfd, &st) < 0) {
-            close(sdfd);
-            return -1;
+        if ((sdfd < 0) || (fstat(sdfd, &st) < 0)) {
+            goto ret_err;
         }
         if (!S_ISDIR(st.st_mode)) {
-            close(sdfd);
-            errno = ENOTDIR;
-            return -1;
+            reterr = ENOTDIR;
+            goto ret_err;
         }
     } else {
-        if (fchmod(sdfd, mode) < 0) {
-            close(sdfd);
-            return -1;
-        }
         /* dir_clear_contents closes the descriptor, we need to keep it */
-        int nfd = dup(sdfd);
-        if (nfd < 0) {
-            close(sdfd);
-            return -1;
+        int nfd;
+        if ((fchmod(sdfd, mode) < 0) || ((nfd = dup(sdfd)) < 0)) {
+            goto ret_err;
         }
         if (!dir_clear_contents(nfd)) {
-            close(sdfd);
-            errno = ENOTEMPTY;
-            return -1;
+            reterr = ENOTEMPTY;
+            goto ret_err;
         }
     }
     return sdfd;
+ret_err:
+    if (sdfd >= 0) {
+        close(sdfd);
+    }
+    if (reterr) {
+        errno = reterr;
+    }
+    return -1;
 }
 
 bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
