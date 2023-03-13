@@ -1,39 +1,173 @@
 # turnstile
 
-Turnstile, formerly dinit-userservd, is a work in progress effort to create
-a session/login tracker to serve as a fully featured alternative to the logind
-subproject from systemd, and to provide a neutral API to both our session
-tracker and to logind itself.
+Turnstile is a work in progress effort to create a session/login tracker to
+serve as a fully featured alternative to the logind subproject from systemd,
+and to provide a neutral API to both our session tracker and to logind itself.
 
-Originally a user instance manager for [Dinit](https://github.com/davmac314/dinit),
-it has eventually outgrown its initial responsibilities, becoming almost a full
-session tracker. At that point, it has been decided that it will become one, and
-attempt to solve the current status quo where logind is the de-facto standard,
-but at the same time very much tied to systemd, with workarounds such as elogind
-being far from ideal.
+It is:
 
-Currently, only a daemon is provided. Eventually, a library will be introduced,
-which will have backends both `turnstiled` and for `logind` or `elogind`. This
-will be meant for adoption by upstream software projects. Turnstile is not going
-to attempt seat management, instead [seatd](https://git.sr.ht/~kennylevinsen/seatd)
-should be used for that purpose (whose `libseat` can likewise target `logind` as
-one of its backends). In many projects, it will make sense to use both libraries
-at the same time. However, `libturnstile` will expose some seat information, in
-order to be able to map sessions to seats and vice versa.
+* a session/login tracker
+* a service-manager-agnostic way to manage per-user service managers
+  for user services
 
-Currently, this is an early work in progress. **Below is the slightly updated old
-information for dinit-userservd, which will be rewritten later.**
+it is not:
+
+* a seat tracker (you want [seatd](https://git.sr.ht/~kennylevinsen/seatd) for
+  that)
+
+it is not yet:
+
+* a library to examine session information
+
+## History
+
+Its original name was dinit-userservd and it was created as a way to auto-spawn
+user instances of [Dinit](https://github.com/davmac314/dinit) upon login and
+shut them down upon logout, to allow for clean management of user services.
+
+Soon after it outgrew its original responsibilities and gained adjacent
+functionality such as handling of `XDG_RUNTIME_DIR`. At that point, it was
+decided that it would be worthwhile to expand the overall scope, as most of
+the effort was already there.
 
 ## Purpose
 
-As the name implies, the purpose of the project is to provide convenient
-handling of user services. There are many things one might want to manage
-through user services. This includes for instance the D-Bus session bus
-or a sound server.
+Its ultimate goal is to provide a fully featured replacement for the `logind`
+component of systemd, solving the current status quo where `logind` is the
+de-facto standard, but at the same time very much tied to systemd.
 
-Thanks to the project, one can have user services that are automatically
-spawned upon first login and shut down upon last logout. It also takes
-care of some extra adjacent functionality that is handy to have.
+While there are workarounds such as elogind, these are far from ideal. For
+instance, elogind is just a stubbed out version of upstream logind, and
+only provides the bare minimum, so systems using it are left without support
+for user services and other useful functionality.
+
+This goal has not yet been accomplished, as at the moment Turnstile is only
+a daemon and does not provide any API. This will change in the future. This
+API will provide a way to access the session information, but will not deal
+with seat management. You will be able to use the library together with
+`libseat` without conflicting. The API will expose the bare minimum needed
+for the two libraries to interoperate.
+
+Turnstile is designed to not care about what service manager it is used with.
+None of the daemon code cares, instead leaving this to separate backends.
+
+## Backends
+
+Turnstile is capable of supporting multiple service managers, and the code
+makes no assumptions about what service manager one is using to handle user
+instances.
+
+That said, right now the only available backend is for Dinit, which also
+serves as an example for implementation of other backends. There is also
+the built-in `none` backend, which does not handle user services at all
+and lets the daemon do only session tracking and auxiliary tasks. The
+used backend is configured in `turnstiled.conf`.
+
+A backend is a very trivial shell script. Its responsibility is to launch
+the service manager and ensure that the daemon is notified of its readiness,
+which is handled with a special file descriptor.
+
+## How it works
+
+There are three parts.
+
+1) The daemon, `turnstiled`.
+2) The PAM module, `pam_turnstile.so`.
+3) The chosen backend.
+
+The daemon needs to be running in some way. Usually you will spawn it as a
+system-wide service. It needs to be running as the superuser. The daemon is
+what keeps track of the session state, and what launches the user service
+manager through the backend.
+
+The PAM module needs to be in your login path. This will differ per-distro,
+but typically it will involve a line like this:
+
+```
+session optional pam_turnstile.so
+```
+
+When the daemon starts, it opens a Unix domain socket. This is where it listens
+for connections. When a user tries to log in, the PAM module will open one such
+connection and communicate the information to the daemon using a custom internal
+protocol.
+
+Once the handshake is done and all the state is properly negotiated, the daemon
+will try to spawn the service manager for the user. It does so through the
+backend, which is tasked with the `run` action.
+
+The backend is invoked as a shell script, specifically as a login shell. This
+means that it starts with a clean environment, but has many of the common
+env vars (such as `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH` and others)
+freshly initialized, and the shell profile is also sourced. Additionally,
+it sets up a PAM session (but without authentication) in order to allow the
+tservice manager's environment to have default resource limits and other
+session matters equivalent to a real login.
+
+After performing some initial preparation (which is backend-specific), the
+backend will simply replace itself with the desired service manager. There
+is a special file descriptor that is passed to the backend. The service
+manager (or possibly even the backend itself) can write a string of data
+in there when it's ready enough to accept outside commands.
+
+Once tha that has happened, the daemon will invoke the backend once more, this
+time with the `ready` action and as a regular (non-login) shell script, without
+any special environment setup. It passes the previously received string as
+an argument. The backend then has the responsibility to wait as long as it
+takes (or until a timeout is reached) for the initial user services to start
+up.
+
+Afterwards, the daemon will send a message back to the PAM module, allowing
+the login to proceed. This ensures that by the time the user gets their login
+terminal, the autostarted user services are already up.
+
+When the user logs out (or rather, when the last login of the user has logged
+out), this service manager will shut down by default. However, it can also be
+configured to linger.
+
+### Auxiliary tasks
+
+The daemon can also perform various adjacent tasks. As it can be configured
+through `turnstiled.conf`, many of these can be enabled or disabled as needed.
+
+#### Rundir management
+
+The environment variable `XDG_RUNTIME_DIR` is by default set in the user's
+login environment. Typically it is something like `/run/user/$UID`.
+
+Turnstile can also create this directory. Whether it creates it by default
+comes down to how the build is configured. Environments using stock `logind`
+will want to keep it off in order to avoid conflicting, while others may
+want to turn it on.
+
+Regardless of the default behavior, it can be altered in the configuration file.
+
+#### Session persistence
+
+It is possible to configure the sessions to linger, so the user services will
+remain up even after logout. This can be done either per-user, or globally.
+
+Note that session peristence relies on rundir creation being enabled, as in
+the other case the daemon cannot know whether the other management solution
+is not deleting the rundir, and many user services rely on its existence.
+This can be manually overridden with an environment variable, at your own
+risk.
+
+#### D-Bus session bus address
+
+By default, the address of the D-Bus session bus will be exported into the
+login environment and set to something like `unix:path=$XDG_RUNTIME_DIR/bus`,
+if that socket exists and is valid in that path.
+
+This allows the D-Bus session bus to be managed as a user service, to get
+systemd-style behavior with a single session bus shared between user logins.
+It can be explicitly disabled if necessary, but mostly there is no need to
+as the variable will not be exported if the bus does not exist there.
+
+Note that this does not mean the bus address is exported into the activation
+environment, as turnstile does not know about it. The user service that spawns
+the session bus needs to take care of that, e.g. with `dinitctl setenv` for
+Dinit. Only this way will other user services know about the session bus.
 
 ## Setup
 
@@ -52,99 +186,8 @@ The dependencies are:
 1) A POSIX-compliant OS (Chimera Linux is the reference platform)
 2) A C++17 compiler
 3) Meson and Ninja (to build)
-4) Dinit (**version 0.16.0 or newer**, older versions will not work)
 5) PAM
 
-The system consists of two parts:
-
-1) The daemon `turnstiled`
-2) The PAM module `pam_turnstile.so`
-
-The PAM module needs to be enabled in your login path. This will differ in
-every distribution. Generally you need something like this:
-
-```
-session optional pam_turnstile.so
-```
-
-The daemon needs to be running as superuser when logins happen. The easiest
-way to do so is through a system Dinit service. The project already installs
-an example service (which works on Chimera Linux).
-
-## How it works
-
-The `turnstiled` daemon manages sessions. A session is a set of logins
-of a specific user. Upon first login in a session, the daemon spawns a user
-instance of Dinit. Upon last logout in a session, the instance is stopped.
-The instance is supervised by the daemon and does not have access to any
-of the specific login environment (being shared between logins).
-
-The user instance is also set up with PAM. It does not perform any
-authentication (being started by a privileged daemon and as a part of
-the user's login) but it's still set up similarly to a reduced login
-session. That means it has its resource limits, umask and so on set
-up as if it was a login, and comes with a fresh set of environment
-variables. The shell profile is, however, not sourced (there is no
-shell being invoked).
-
-The login will not proceed until all user services have started or until
-a timeout has occured (configurable). This user instance will have an
-implicit `boot` service, which will wait for all services in the user's
-`boot.d` (or another path depending on configuration) to start. If the
-`boot.d` does not exist, it will first be created before starting the
-user Dinit.
-
-The daemon is notified of logins and logouts through the PAM module. The
-daemon opens a control socket upon startup; when a user logs in and the PAM
-module kicks in, it opens a connection to this socket and this connection
-is kept until the user has logged out. This socket is only accessible to
-superuser and uses a simple internal protocol to talk to the PAM module.
-
-The behavior of the daemon is configurable through the `turnstiled.conf`
-configuration file. The PAM module is not configurable in any way.
-
-Some of the configuration options include debug logging, custom directories
-where user services are located and so on. There is also some auxiliary
-functionality:
-
-### Rundir management
-
-The daemon relies on the `XDG_RUNTIME_DIR` functionality and exports the env
-variable into the service activation environment. The path is specified in
-the configuration file and tends to be something like `/run/user/$UID`.
-
-It can manage the directory by itself, if that is enabled. By default, this
-is build-dependent. There are other solutions that can manage the runtime
-directory, such as `elogind`, and typically they conflict. Therefore, do
-be careful with it. However, the session persistence functionality relies
-on this being enabled.
-
-You can toggle it in the configuration file. When the daemon manages the
-directory, the environment variable is also exported into the login
-environment in addition to the activation environment.
-
-### Session persistence
-
-It is optionally possible to keep services running even after the last login
-has logged out. This is controlled through the `linger` option in the config
-file. The default behavior allows for per-user control, with no lingering by
-default except for users specially marked in the state directory.
-
-Lingering only works when rundir management is enabled.
-
-### D-Bus session bus handling
-
-When using user services to manage your D-Bus session bus, you will have just
-one session bus running for all logins of the user, and its socket path will
-typically be `$XDG_RUNTIME_DIR/bus`.
-
-By default, if this socket exists by the time the user services have started,
-the `DBUS_SESSION_BUS_ADDRESS` environment variable will be exported into
-the login environment by the PAM module, pointing to the correct socket.
-
-This can be disabled if desired. Note that if the socket does not exist,
-nothing is exported.
-
-This does not take care of exporting the variable into the activation env.
-Doing so is up to the user service that spawns the session bus. It can and
-should do so with for example `dinitctl setenv`.
+The Dinit backend requires at least Dinit 0.16 or newer, older versions will
+not work. The project also installs an example Dinit service for starting
+the daemon.
