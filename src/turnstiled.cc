@@ -885,6 +885,7 @@ int main(int argc, char **argv) {
         userv_dirfd = dir_make_at(dfd, SOCK_DIR, 0755);
         if (userv_dirfd < 0) {
             print_err("failed to create base directory (%s)", strerror(errno));
+            return 1;
         }
         close(dfd);
     }
