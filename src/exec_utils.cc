@@ -178,6 +178,10 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
             return;
         }
     }
+    /* change directory to home, fall back to / or error */
+    if ((chdir(sess.homedir) < 0) || (chdir("/") < 0)) {
+        perror("srv: failed to change directory");
+    }
     /* set up service manager tempdir after we drop privileges */
     char tdirn[38];
     std::snprintf(
@@ -288,11 +292,9 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
         }
         argp.push_back(nullptr);
     }
-    auto *argv = const_cast<char **>(&argp[0]);
-    /* try change directory to home, but do not fail */
-    chdir(sess.homedir);
     /* finish pam before execing */
     dpam_finalize(pamh);
     /* fire */
+    auto *argv = const_cast<char **>(&argp[0]);
     execve(_PATH_BSHELL, argv, argv + argc + 1);
 }
