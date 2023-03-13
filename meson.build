@@ -68,11 +68,13 @@ pam_mod = shared_module(
     gnu_symbol_visibility: 'hidden'
 )
 
-install_data(
-    'data/dinit/turnstiled',
-    install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
-    install_mode: 'rw-r--r--'
-)
+if get_option('dinit').enabled()
+    install_data(
+        'data/dinit/turnstiled',
+        install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
+        install_mode: 'rw-r--r--'
+    )
+endif
 
 install_data(
     'data/pam/turnstiled',

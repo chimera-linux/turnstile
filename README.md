@@ -101,7 +101,7 @@ means that it starts with a clean environment, but has many of the common
 env vars (such as `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH` and others)
 freshly initialized, and the shell profile is also sourced. Additionally,
 it sets up a PAM session (but without authentication) in order to allow the
-tservice manager's environment to have default resource limits and other
+service manager's environment to have default resource limits and other
 session matters equivalent to a real login.
 
 After performing some initial preparation (which is backend-specific), the

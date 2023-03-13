@@ -1,3 +1,8 @@
+option('dinit',
+    type: 'feature', value: 'enabled',
+    description: 'Whether to install Dinit-related backend and data'
+)
+
 option('rundir',
     type: 'string', value: '/run',
     description: 'Where the base directory will be located'
