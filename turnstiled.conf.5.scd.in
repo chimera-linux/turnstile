@@ -7,6 +7,7 @@ turnstiled.conf - the *turnstiled*(8) configuration file
 # DESCRIPTION
 
 The file _turnstiled.conf_ contains the daemon's configuration.
+It typically resides in _/etc/turnstile_ (or your sysconfdir of choice).
 
 While the daemon can run without any configuration file thanks to its
 built-in defaults, there are many options that the user may want to
@@ -38,7 +39,7 @@ accept more values.
 
 *backend* (string: _dinit_)
 	The service backend to use. The default and currently the only shipped
-	backend is dinit, but others may be implemented.
+	backend is _dinit_, but others may be implemented.
 
 	Can also be set to _none_ to disable the service backend. In that case,
 	nothing will be spawned, but the daemon will still perform login tracking

@@ -10,19 +10,20 @@ turnstiled - the main session management daemon
 
 # DESCRIPTION
 
-*turnstiled* is a daemon that manages user instances for the Dinit
-service manager.
+*turnstiled* is a daemon that tracks user sessions and optionally spawns
+and manages service managers for them.
 
 For configuration, see *turnstiled.conf*(5).
 
-Upon user login, it spawns an instance of Dinit for the user, while upon
-last logout, it shuts down this instance (unless configured to longer).
+Upon user login, it spawns an instance of the chosen service manager for the
+user, while upon last logout, it shuts down this instance (unless configured
+to longer).
 
 User logins and logouts are communicated via *pam\_turnstile*(8).
 
 The daemon itself takes no options other than possibly a configuration
 file path as its sole argument. If not provided, the default path is
-used, typically _/etc/turnstiled.conf_.
+used, typically _/etc/turnstile/turnstiled.conf_.
 
 # XDG\_RUNTIME\_DIR MANAGEMENT
 
