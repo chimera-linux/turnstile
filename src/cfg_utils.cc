@@ -112,7 +112,7 @@ void cfg_read(char const *cfgpath) {
             if (!rp.empty() && ((rp.back() == '/') || (rp.front() != '/'))) {
                 syslog(
                     LOG_WARNING,
-                    "Invalid config value for '%s' (%s)", bufp, rp
+                    "Invalid config value for '%s' (%s)", bufp, rp.data()
                 );
             } else {
                 cdata->rdir_path = std::move(rp);
