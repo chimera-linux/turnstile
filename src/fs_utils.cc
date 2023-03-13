@@ -59,8 +59,13 @@ bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
         sl = strchr(sl + 1, '/');
     }
     /* create rundir with correct permissions */
-    if (mkdir(rundir, 0700)) {
-        print_err("rundir: mkdir failed for rundir (%s)", strerror(errno));
+    if (stat(rundir, &dstat) || !S_ISDIR(dstat.st_mode)) {
+        if (mkdir(rundir, 0700)) {
+            print_err("rundir: mkdir failed for rundir (%s)", strerror(errno));
+            return false;
+        }
+    } else if (chmod(rundir, 0700) < 0) {
+        print_err("rundir: chmod failed for rundir (%s)", strerror(errno));
         return false;
     }
     if (chown(rundir, uid, gid) < 0) {
