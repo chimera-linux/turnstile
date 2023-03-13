@@ -19,18 +19,31 @@ int dir_make_at(int dfd, char const *dname, mode_t mode) {
             return -1;
         }
         sdfd = openat(dfd, dname, O_RDONLY | O_NOFOLLOW);
-        if (fstat(sdfd, &st)) {
+        if (sdfd < 0) {
+            return -1;
+        }
+        if (fstat(sdfd, &st) < 0) {
+            close(sdfd);
             return -1;
         }
         if (!S_ISDIR(st.st_mode)) {
+            close(sdfd);
             errno = ENOTDIR;
             return -1;
         }
     } else {
-        if (fchmod(sdfd, mode)) {
+        if (fchmod(sdfd, mode) < 0) {
+            close(sdfd);
             return -1;
         }
-        if (!dir_clear_contents(sdfd)) {
+        /* dir_clear_contents closes the descriptor, we need to keep it */
+        int nfd = dup(sdfd);
+        if (nfd < 0) {
+            close(sdfd);
+            return -1;
+        }
+        if (!dir_clear_contents(nfd)) {
+            close(sdfd);
             errno = ENOTEMPTY;
             return -1;
         }
@@ -111,12 +124,19 @@ void rundir_clear(char *rundir) {
     print_dbg("rundir: clear directory %s", rundir);
     int dfd = open(rundir, O_RDONLY | O_NOFOLLOW);
     /* non-existent */
+    if (dfd < 0) {
+        return;
+    }
+    /* an error? */
     if (fstat(dfd, &dstat)) {
+        print_dbg("rundir: could not stat %s (%s)", rundir, strerror(errno));
+        close(dfd);
         return;
     }
     /* not a directory */
     if (!S_ISDIR(dstat.st_mode)) {
         print_dbg("rundir: %s is not a directory", rundir);
+        close(dfd);
         return;
     }
     if (dir_clear_contents(dfd)) {

@@ -81,7 +81,7 @@ session::~session() {
 
 void session::remove_sdir() {
     unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
-    close(this->dirfd);
+    dir_clear_contents(this->dirfd);
     this->dirfd = -1;
 }
 
@@ -174,9 +174,7 @@ static bool srv_start(session &sess) {
                 "srv: session dir setup failed for %u (%s)",
                 sess.uid, strerror(errno)
             );
-            if (dir_clear_contents(sess.dirfd)) {
-                sess.remove_sdir();
-            }
+            sess.remove_sdir();
             return false;
         }
     }
@@ -686,9 +684,7 @@ static bool srv_reaper(pid_t pid) {
         } else if (pid == sess.term_pid) {
             /* if there was a timer on the session, safe to drop it now */
             sess.disarm_timer();
-            if (dir_clear_contents(sess.dirfd)) {
-                sess.remove_sdir();
-            }
+            sess.remove_sdir();
             /* clear rundir if needed */
             if (sess.manage_rdir) {
                 rundir_clear(sess.rundir);
