@@ -133,6 +133,9 @@ static bool dpam_open(pam_handle_t *pamh) {
 }
 
 static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
+    if (!pamh) {
+        return false;
+    }
     if (!dpam_open(pamh)) {
         return false;
     }
@@ -174,7 +177,7 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
     if (getuid() == 0) {
         /* setup pam session */
         pamh = dpam_begin(pw);
-        if (!pamh || !dpam_setup(pamh, pw)) {
+        if (!dpam_setup(pamh, pw)) {
             return;
         }
     }
