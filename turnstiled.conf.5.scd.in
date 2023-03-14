@@ -38,8 +38,8 @@ accept more values.
 	only useful when investigating issues.
 
 *backend* (string: _dinit_)
-	The service backend to use. The default and currently the only shipped
-	backend is _dinit_, but others may be implemented.
+	The service backend to use. The default is build-dependent and in this
+	case is set to _@DEFAULT_BACKEND@_.
 
 	Can also be set to _none_ to disable the service backend. In that case,
 	nothing will be spawned, but the daemon will still perform login tracking

@@ -22,6 +22,8 @@ scdoc_dep = dependency(
     native: true
 )
 
+have_dinit = get_option('dinit').enabled()
+
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
 conf_data.set_quoted('CONF_PATH', join_paths(
@@ -72,7 +74,7 @@ pam_mod = shared_module(
     gnu_symbol_visibility: 'hidden'
 )
 
-if get_option('dinit').enabled()
+if have_dinit
     install_data(
         'data/dinit/turnstiled',
         install_dir: join_paths(get_option('sysconfdir'), 'dinit.d'),
@@ -86,10 +88,18 @@ install_data(
     install_mode: 'rw-r--r--'
 )
 
+# decide the default backend
+if have_dinit
+    default_backend = 'dinit'
+else
+    default_backend = 'none'
+endif
+
 uconf_data = configuration_data()
 
 uconf_data.set('RUN_PATH', get_option('rundir'))
 uconf_data.set('LINGER_PATH', lingerpath)
+uconf_data.set('DEFAULT_BACKEND', default_backend)
 
 if get_option('manage_rundir')
     uconf_data.set('MANAGE_RUNDIR', 'yes')

@@ -1,6 +1,6 @@
 # dinit backend
 
-if get_option('dinit').enabled()
+if have_dinit
     install_data(
         'dinit',
         install_dir: join_paths(get_option('libexecdir'), 'turnstile'),
