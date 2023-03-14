@@ -16,7 +16,11 @@ pam_dep = dependency('pam', required: true)
 pam_misc_dep = dependency('pam_misc', required: false)
 rt_dep = cpp.find_library('rt', required: false)
 
-scdoc_dep = dependency('scdoc', version: '>=1.10', required: get_option('man'))
+scdoc_dep = dependency(
+    'scdoc', version: '>=1.10',
+    required: get_option('man'),
+    native: true
+)
 
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
