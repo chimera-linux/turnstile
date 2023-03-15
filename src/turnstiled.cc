@@ -35,6 +35,23 @@
 #error "No CONF_PATH is defined"
 #endif
 
+/* whether we can accept connections from non-root
+ *
+ * this relies on non-portable credentials checking, so on systems where
+ * we don't have an implementation, treat the protocol as unsafe and only
+ * accept connections from root
+ *
+ * it would be nice to get this implemented on other systems; right now
+ * it is just linux and openbsd as far as i can tell; e.g. freebsd would
+ * require a control message (and send it with MSG_START)
+ */
+#if defined(__linux__) || defined(__OpenBSD)
+/* SO_PEERCRED checking */
+#define CSOCK_MODE 0666
+#else
+#define CSOCK_MODE 0600
+#endif
+
 #define DEFAULT_CFG_PATH CONF_PATH "/turnstiled.conf"
 
 /* when stopping service manager, we first do a SIGTERM and set up this
@@ -55,6 +72,8 @@ struct pending_conn {
     {}
     int conn = -1;
     char *homedir = nullptr;
+    unsigned int peer_uid = UINT_MAX;
+    unsigned int peer_gid = UINT_MAX;
     unsigned int uid = 0;
     unsigned int gid = 0;
     unsigned int dirleft = 0;
@@ -225,6 +244,7 @@ static session *get_session(int fd) {
             }
         }
     }
+    print_dbg("msg: no session for %d", fd);
     return nullptr;
 }
 
@@ -241,6 +261,10 @@ static bool handle_session_new(
 ) {
     /* first message after welcome */
     if (it.pending_uid) {
+        if ((it.peer_uid != 0) && (msg != it.peer_uid)) {
+            print_dbg("msg: uid mismatch (peer: %u, got: %u)", it.peer_uid, msg);
+            return false;
+        }
         print_dbg("msg: welcome uid %u", msg);
         it.uid = msg;
         it.pending_uid = 0;
@@ -248,6 +272,10 @@ static bool handle_session_new(
     }
     /* first message after uid */
     if (it.pending_gid) {
+        if ((it.peer_gid != 0) && (msg != it.peer_gid)) {
+            print_dbg("msg: gid mismatch (peer: %u, got: %u)", it.peer_gid, msg);
+            return false;
+        }
         print_dbg("msg: welcome gid %u (uid %u)", msg, it.uid);
         it.gid = msg;
         it.pending_gid = 0;
@@ -363,12 +391,35 @@ static bool handle_read(int fd) {
             /* new login, register it */
             auto &pc = pending_conns.emplace_back();
             pc.conn = fd;
+#if defined(__linux__) || defined(__OpenBSD)
+#ifdef __OpenBSD
+            struct sockpeercred cr;
+#else
+            struct ucred cr;
+#endif
+            socklen_t crl = sizeof(cr);
+            if (!getsockopt(
+                fd, SOL_SOCKET, SO_PEERCRED, &cr, &crl
+            ) && (sizeof(cr) == crl)) {
+                pc.peer_uid = pc.uid;
+                pc.peer_gid = pc.gid;
+            } else {
+                print_dbg("msg: could not get peer credentials");
+                return msg_send(fd, MSG_ERR);
+            }
+#else
+            /* fallback behavior: root-only socket
+             *
+             * in this case, just assume peer uid/gid is 0 and skip checks
+             */
+            pc.peer_uid = 0;
+            pc.peer_gid = 0;
+#endif
             return msg_send(fd, MSG_OK);
         }
         case MSG_OK: {
             auto *sess = get_session(fd);
             if (!sess) {
-                print_dbg("msg: no session for %u", msg);
                 return msg_send(fd, MSG_ERR);
             }
             if (!sess->srv_wait) {
@@ -398,6 +449,9 @@ static bool handle_read(int fd) {
         }
         case MSG_REQ_RLEN: {
             auto *sess = get_session(fd);
+            if (!sess) {
+                return msg_send(fd, MSG_ERR);
+            }
             /* send rundir length */
             if (!sess->rundir[0]) {
                 /* send zero length */
@@ -412,6 +466,9 @@ static bool handle_read(int fd) {
         }
         case MSG_REQ_RDATA: {
             auto *sess = get_session(fd);
+            if (!sess) {
+                return msg_send(fd, MSG_ERR);
+            }
             msg >>= MSG_TYPE_BITS;
             if (msg == 0) {
                 return msg_send(fd, MSG_ERR);
@@ -541,7 +598,7 @@ static void conn_term(int conn) {
     close(conn);
 }
 
-static bool sock_new(char const *path, int &sock) {
+static bool sock_new(char const *path, int &sock, mode_t mode) {
     sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock < 0) {
         print_err("socket failed (%s)", strerror(errno));
@@ -572,7 +629,7 @@ static bool sock_new(char const *path, int &sock) {
     }
     print_dbg("socket: bound %d for %s", sock, path);
 
-    if (chmod(path, 0600) < 0) {
+    if (chmod(path, mode) < 0) {
         print_err("chmod failed (%s)", strerror(errno));
         goto fail;
     }
@@ -910,7 +967,7 @@ int main(int argc, char **argv) {
 
     /* main control socket */
     {
-        if (!sock_new(DAEMON_SOCK, ctl_sock)) {
+        if (!sock_new(DAEMON_SOCK, ctl_sock, CSOCK_MODE)) {
             return 1;
         }
         auto &pfd = fds.emplace_back();
