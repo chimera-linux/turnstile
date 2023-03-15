@@ -64,11 +64,21 @@ daemon = executable(
     gnu_symbol_visibility: 'hidden'
 )
 
+pam_moddir = get_option('pam_moddir')
+
+if pam_moddir == ''
+    pam_moddir = join_paths(
+        pam_dep.get_variable('libdir', default_value: get_option('libdir')),
+        'security'
+    )
+    message('Detected PAM module directory:', pam_moddir)
+endif
+
 pam_mod = shared_module(
     'pam_turnstile', 'src/pam_turnstile.cc',
     include_directories: extra_inc,
     install: true,
-    install_dir: join_paths(get_option('libdir'), 'security'),
+    install_dir: pam_moddir,
     name_prefix: '',
     dependencies: [pam_dep],
     gnu_symbol_visibility: 'hidden'

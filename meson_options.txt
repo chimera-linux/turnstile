@@ -13,6 +13,11 @@ option('statedir',
     description: 'The state directory relative to localstatedir'
 )
 
+option('pam_moddir',
+    type: 'string', value: '',
+    description: 'Where to install the PAM module (leave empty to autodetect)'
+)
+
 option('manage_rundir',
    type: 'boolean', value: false,
    description: 'Whether to manage rundir by default'
