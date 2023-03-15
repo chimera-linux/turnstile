@@ -363,13 +363,48 @@ static bool handle_session_new(
     return true;
 }
 
-static bool get_euid_sockopt(int fd, int level, int opt, void *ptr, size_t bufs) {
-    socklen_t crl = bufs;
-    if (!getsockopt(fd, level, opt, ptr, &crl) && (bufs == crl)) {
+static bool get_peer_euid(int fd, unsigned int &euid) {
+#if defined(SO_PEERCRED)
+    /* Linux or OpenBSD */
+#ifdef __OpenBSD
+    struct sockpeercred cr;
+#else
+    struct ucred cr;
+#endif
+    socklen_t crl = sizeof(cr);
+    if (!getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &crl) && (crl == sizeof(cr))) {
+        euid = cr.uid;
         return true;
     }
-    print_dbg("msg: could not get peer credentials");
-    return msg_send(fd, MSG_ERR);
+#elif defined(LOCAL_PEERCRED)
+    /* FreeBSD */
+    struct xucred cr;
+    socklen_t crl = sizeof(cr);
+    if (
+        !getsockopt(fd, 0, LOCAL_PEERCRED, &cr, &crl) && (crl == sizeof(cr)) &&
+        (cr.cr_version == XUCRED_VERSION)
+    ) {
+        euid = cr.cr_uid;
+        return true;
+    }
+#elif defined(LOCAL_PEEREID)
+    /* NetBSD */
+    struct unpcbid cr;
+    socklen_t crl = sizeof(cr);
+    if (!getsockopt(fd, 0, LOCAL_PEEREID, &cr, &crl) && (crl == sizeof(cr))) {
+        euid = cr.unp_euid;
+        return true;
+    }
+#elif defined(__sun) || defined(sun)
+    /* Solaris */
+    ucred_t *cr = nullptr;
+    if (!getpeerucred(fd, &cr) && (ucred_geteuid(cr) != uid_t(-1))) {
+        euid = ucred_geteuid(cr);
+    }
+#else
+#error Please implement credentials checking for your OS.
+#endif
+    return false;
 }
 
 static bool handle_read(int fd) {
@@ -391,46 +426,10 @@ static bool handle_read(int fd) {
             /* new login, register it */
             auto &pc = pending_conns.emplace_back();
             pc.conn = fd;
-#if defined(SO_PEERCRED)
-            /* Linux or OpenBSD */
-#ifdef __OpenBSD
-            struct sockpeercred cr;
-#else
-            struct ucred cr;
-#endif
-            if (!get_euid_sockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, sizeof(cr))) {
-                return false;
-            }
-            pc.peer_uid = cr.uid;
-#elif defined(LOCAL_PEERCRED)
-            /* FreeBSD */
-            struct xucred cr;
-            if (!get_euid_sockopt(fd, 0, LOCAL_PEERCRED, &cr, sizeof(cr))) {
-                return false;
-            }
-            pc.peer_uid = cr.cr_uid;
-#elif defined(LOCAL_PEEREID)
-            /* NetBSD */
-            struct unpcbid cr;
-            if (!get_euid_sockopt(fd, 0, LOCAL_PEEREID, &cr, sizeof(cr))) {
-                return false;
-            }
-            pc.peer_uid = cr.unp_euid;
-#elif defined(__sun) || defined(sun)
-            /* Solaris */
-            ucred_t *cr = nullptr;
-            if (
-                (getpeerucred(fd, &cr) < 0) ||
-                (ucred_geteuid(cr) == uid_t(-1))
-            ) {
+            if (!get_peer_euid(fd, pc.peer_uid)) {
                 print_dbg("msg: could not get peer credentials");
                 return msg_send(fd, MSG_ERR);
             }
-            pc.peer_uid = ucred_geteuid(cr);
-            ucred_free(cr);
-#else
-#error Please implement credentials checking for your OS.
-#endif
             return msg_send(fd, MSG_OK);
         }
         case MSG_OK: {
