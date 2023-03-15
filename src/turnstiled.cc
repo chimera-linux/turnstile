@@ -28,6 +28,13 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#if defined(__sun) || defined(sun)
+# if __has_include(<ucred.h>)
+#  include <ucred.h>
+# else
+#  include <sys/ucred.h>
+# endif
+#endif
 
 #include "turnstiled.hh"
 
@@ -35,22 +42,14 @@
 #error "No CONF_PATH is defined"
 #endif
 
-/* whether we can accept connections from non-root
+/* we accept connections from non-root
  *
- * this relies on non-portable credentials checking, so on systems where
- * we don't have an implementation, treat the protocol as unsafe and only
- * accept connections from root
+ * this relies on non-portable credentials checking,
+ * so it must be implemented for every system separately
  *
- * it would be nice to get this implemented on other systems; right now
- * it is just linux and openbsd as far as i can tell; e.g. freebsd would
- * require a control message (and send it with MSG_START)
+ * it would be nice to get this implemented on other systems
  */
-#if defined(__linux__) || defined(__OpenBSD)
-/* SO_PEERCRED checking */
 #define CSOCK_MODE 0666
-#else
-#define CSOCK_MODE 0600
-#endif
 
 #define DEFAULT_CFG_PATH CONF_PATH "/turnstiled.conf"
 
@@ -364,6 +363,15 @@ static bool handle_session_new(
     return true;
 }
 
+static bool get_euid_sockopt(int fd, int level, int opt, void *ptr, size_t bufs) {
+    socklen_t crl = bufs;
+    if (!getsockopt(fd, level, opt, ptr, &crl) && (bufs == crl)) {
+        return true;
+    }
+    print_dbg("msg: could not get peer credentials");
+    return msg_send(fd, MSG_ERR);
+}
+
 static bool handle_read(int fd) {
     unsigned int msg;
     auto ret = recv(fd, &msg, sizeof(msg), 0);
@@ -383,27 +391,45 @@ static bool handle_read(int fd) {
             /* new login, register it */
             auto &pc = pending_conns.emplace_back();
             pc.conn = fd;
-#if defined(__linux__) || defined(__OpenBSD)
+#if defined(SO_PEERCRED)
+            /* Linux or OpenBSD */
 #ifdef __OpenBSD
             struct sockpeercred cr;
 #else
             struct ucred cr;
 #endif
-            socklen_t crl = sizeof(cr);
-            if (!getsockopt(
-                fd, SOL_SOCKET, SO_PEERCRED, &cr, &crl
-            ) && (sizeof(cr) == crl)) {
-                pc.peer_uid = pc.uid;
-            } else {
+            if (!get_euid_sockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, sizeof(cr))) {
+                return false;
+            }
+            pc.peer_uid = cr.uid;
+#elif defined(LOCAL_PEERCRED)
+            /* FreeBSD */
+            struct xucred cr;
+            if (!get_euid_sockopt(fd, 0, LOCAL_PEERCRED, &cr, sizeof(cr))) {
+                return false;
+            }
+            pc.peer_uid = cr.cr_uid;
+#elif defined(LOCAL_PEEREID)
+            /* NetBSD */
+            struct unpcbid cr;
+            if (!get_euid_sockopt(fd, 0, LOCAL_PEEREID, &cr, sizeof(cr))) {
+                return false;
+            }
+            pc.peer_uid = cr.unp_euid;
+#elif defined(__sun) || defined(sun)
+            /* Solaris */
+            ucred_t *cr = nullptr;
+            if (
+                (getpeerucred(fd, &cr) < 0) ||
+                (ucred_geteuid(cr) == uid_t(-1))
+            ) {
                 print_dbg("msg: could not get peer credentials");
                 return msg_send(fd, MSG_ERR);
             }
+            pc.peer_uid = ucred_geteuid(cr);
+            ucred_free(cr);
 #else
-            /* fallback behavior: root-only socket
-             *
-             * in this case, just assume peer uid is 0 and skip checks
-             */
-            pc.peer_uid = 0;
+#error Please implement credentials checking for your OS.
 #endif
             return msg_send(fd, MSG_OK);
         }
