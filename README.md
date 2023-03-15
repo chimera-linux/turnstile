@@ -110,7 +110,7 @@ is a special file descriptor that is passed to the backend. The service
 manager (or possibly even the backend itself) can write a string of data
 in there when it's ready enough to accept outside commands.
 
-Once tha that has happened, the daemon will invoke the backend once more, this
+Once that has happened, the daemon will invoke the backend once more, this
 time with the `ready` action and as a regular (non-login) shell script, without
 any special environment setup. It passes the previously received string as
 an argument. The backend then has the responsibility to wait as long as it
