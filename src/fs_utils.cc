@@ -39,6 +39,7 @@ int dir_make_at(int dfd, char const *dname, mode_t mode) {
             goto ret_err;
         }
     }
+    umask(omask);
     return sdfd;
 ret_err:
     umask(omask);
