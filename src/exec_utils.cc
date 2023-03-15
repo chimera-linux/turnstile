@@ -62,8 +62,8 @@ bool srv_boot(session &sess, char const *backend) {
     return true;
 }
 
-static bool dpam_setup_groups(pam_handle_t *pamh, struct passwd *pwd) {
-    if (initgroups(pwd->pw_name, pwd->pw_gid) != 0) {
+static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
+    if (initgroups(sess.username.data(), sess.gid) != 0) {
         perror("srv: failed to set supplementary groups");
         return false;
     }
@@ -76,13 +76,13 @@ static bool dpam_setup_groups(pam_handle_t *pamh, struct passwd *pwd) {
     return true;
 }
 
-static pam_handle_t *dpam_begin(struct passwd *pwd) {
+static pam_handle_t *dpam_begin(session const &sess) {
     pam_conv cnv = {
         PAM_CONV_FUNC,
         nullptr
     };
     pam_handle_t *pamh = nullptr;
-    auto pst = pam_start(DPAM_SERVICE, pwd->pw_name, &cnv, &pamh);
+    auto pst = pam_start(DPAM_SERVICE, sess.username.data(), &cnv, &pamh);
     if (pst != PAM_SUCCESS) {
         perror("srv: pam_start");
         return nullptr;
@@ -94,7 +94,7 @@ static pam_handle_t *dpam_begin(struct passwd *pwd) {
         pam_end(pamh, pst);
         return nullptr;
     }
-    if (!dpam_setup_groups(pamh, pwd)) {
+    if (!dpam_setup_groups(pamh, sess)) {
         return nullptr;
     }
     return pamh;
@@ -132,7 +132,7 @@ static bool dpam_open(pam_handle_t *pamh) {
     return true;
 }
 
-static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
+static bool dpam_setup(pam_handle_t *pamh, session const &sess) {
     if (!pamh) {
         return false;
     }
@@ -140,11 +140,11 @@ static bool dpam_setup(pam_handle_t *pamh, struct passwd *pwd) {
         return false;
     }
     /* change identity */
-    if (setgid(pwd->pw_gid) != 0) {
+    if (setgid(sess.gid) != 0) {
         perror("srv: failed to set gid");
         return false;
     }
-    if (setuid(pwd->pw_uid) != 0) {
+    if (setuid(sess.uid) != 0) {
         perror("srv: failed to set uid");
         return false;
     }
@@ -164,20 +164,11 @@ static void dpam_finalize(pam_handle_t *pamh) {
 }
 
 void srv_child(session &sess, char const *backend, char const *pipenum) {
-    auto *pw = getpwuid(sess.uid);
-    if (!pw) {
-        perror("srv: getpwuid failed");
-        return;
-    }
-    if ((pw->pw_uid != sess.uid) || (pw->pw_gid != sess.gid)) {
-        fputs("srv: uid/gid does not match user", stderr);
-        return;
-    }
     pam_handle_t *pamh = nullptr;
     if (getuid() == 0) {
         /* setup pam session */
-        pamh = dpam_begin(pw);
-        if (!dpam_setup(pamh, pw)) {
+        pamh = dpam_begin(sess);
+        if (!dpam_setup(pamh, sess)) {
             return;
         }
     }
@@ -259,10 +250,10 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
         add_str("SHELL=" _PATH_BSHELL);
     }
     if (!have_env_user) {
-        add_str("USER=", pw->pw_name);
+        add_str("USER=", sess.username.data());
     }
     if (!have_env_logname) {
-        add_str("LOGNAME=", pw->pw_name);
+        add_str("LOGNAME=", sess.username.data());
     }
     if (!have_env_home) {
         add_str("HOME=", sess.homedir);

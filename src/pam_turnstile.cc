@@ -119,7 +119,6 @@ static bool open_session(
         unsigned int msg;
         unsigned int state = 0;
         bool sent_uid = false;
-        bool sent_gid = false;
         bool sent_hlen = false;
         bool got_rlen = false;
         char *rbuf = orbuf;
@@ -155,14 +154,6 @@ static bool open_session(
                             goto err;
                         }
                         sent_uid = true;
-                        break;
-                    }
-                    /* send gid */
-                    if (!sent_gid) {
-                        if (!send_msg(MSG_ENCODE(pwd->pw_gid))) {
-                            goto err;
-                        }
-                        sent_gid = true;
                         break;
                     }
                     /* send homedir len */

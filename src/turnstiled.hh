@@ -23,6 +23,8 @@
 struct session {
     /* a list of connection file descriptors for this session */
     std::vector<int> conns{};
+    /* the username */
+    std::string username{};
     /* the string the backend 'run' hands over to 'ready' */
     std::string srvstr{};
     /* home directory path received from the PAM module */

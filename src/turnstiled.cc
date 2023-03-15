@@ -68,18 +68,15 @@ static int userv_dirfd = -1;
 
 struct pending_conn {
     pending_conn():
-        pending_uid{1}, pending_gid{1}, pending_hdir{1}
+        pending_uid{1}, pending_hdir{1}
     {}
     int conn = -1;
     char *homedir = nullptr;
     unsigned int peer_uid = UINT_MAX;
-    unsigned int peer_gid = UINT_MAX;
     unsigned int uid = 0;
-    unsigned int gid = 0;
     unsigned int dirleft = 0;
     unsigned int dirgot  = 0;
     unsigned int pending_uid: 1;
-    unsigned int pending_gid: 1;
     unsigned int pending_hdir: 1;
 
     ~pending_conn() {
@@ -270,17 +267,6 @@ static bool handle_session_new(
         it.pending_uid = 0;
         return true;
     }
-    /* first message after uid */
-    if (it.pending_gid) {
-        if ((it.peer_gid != 0) && (msg != it.peer_gid)) {
-            print_dbg("msg: gid mismatch (peer: %u, got: %u)", it.peer_gid, msg);
-            return false;
-        }
-        print_dbg("msg: welcome gid %u (uid %u)", msg, it.uid);
-        it.gid = msg;
-        it.pending_gid = 0;
-        return true;
-    }
     if (it.pending_hdir) {
         print_dbg("msg: getting homedir for %u (length: %u)", it.uid, msg);
         /* no length or too long; reject */
@@ -339,15 +325,20 @@ static bool handle_session_new(
             break;
         }
     }
+    auto *pwd = getpwuid(it.uid);
+    if (!pwd) {
+        print_err("msg: failed to get pwd for %u (%s)", it.uid, strerror(errno));
+        return false;
+    }
     if (!sess) {
         sess = &sessions.emplace_back();
     }
     /* write uid and gid strings */
-    std::snprintf(sess->uids, sizeof(sess->uids), "%u", it.uid);
-    std::snprintf(sess->gids, sizeof(sess->gids), "%u", it.gid);
+    std::snprintf(sess->uids, sizeof(sess->uids), "%u", pwd->pw_uid);
+    std::snprintf(sess->gids, sizeof(sess->gids), "%u", pwd->pw_gid);
     for (auto c: sess->conns) {
         if (c == fd) {
-            print_dbg("msg: already have session %u", it.uid);
+            print_dbg("msg: already have session %u", pwd->pw_uid);
             return false;
         }
     }
@@ -356,13 +347,14 @@ static bool handle_session_new(
         sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
         sess->uids, sess->gids
     )) {
-        print_dbg("msg: failed to expand rundir for %u", it.uid);
+        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
         return false;
     }
-    print_dbg("msg: setup session %u", it.uid);
+    print_dbg("msg: setup session %u", pwd->pw_uid);
     sess->conns.push_back(fd);
-    sess->uid = it.uid;
-    sess->gid = it.gid;
+    sess->uid = pwd->pw_uid;
+    sess->gid = pwd->pw_gid;
+    sess->username = pwd->pw_name;
     std::free(sess->homedir);
     sess->homedir = it.homedir;
     sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];
@@ -402,7 +394,6 @@ static bool handle_read(int fd) {
                 fd, SOL_SOCKET, SO_PEERCRED, &cr, &crl
             ) && (sizeof(cr) == crl)) {
                 pc.peer_uid = pc.uid;
-                pc.peer_gid = pc.gid;
             } else {
                 print_dbg("msg: could not get peer credentials");
                 return msg_send(fd, MSG_ERR);
@@ -410,10 +401,9 @@ static bool handle_read(int fd) {
 #else
             /* fallback behavior: root-only socket
              *
-             * in this case, just assume peer uid/gid is 0 and skip checks
+             * in this case, just assume peer uid is 0 and skip checks
              */
             pc.peer_uid = 0;
-            pc.peer_gid = 0;
 #endif
             return msg_send(fd, MSG_OK);
         }
@@ -484,7 +474,7 @@ static bool handle_read(int fd) {
         }
         case MSG_DATA: {
             msg >>= MSG_TYPE_BITS;
-            /* can be uid, gid, homedir size, homedir data,
+            /* can be uid, homedir size, homedir data,
              * rundir size or rundir data
              */
             for (
@@ -544,10 +534,9 @@ static bool check_linger(session const &sess) {
     if (dfd < 0) {
         return false;
     }
-    auto *pw = getpwuid(sess.uid);
     struct stat lbuf;
-    bool ret = (pw && !fstatat(
-        dfd, pw->pw_name, &lbuf, AT_SYMLINK_NOFOLLOW
+    bool ret = (!fstatat(
+        dfd, sess.username.data(), &lbuf, AT_SYMLINK_NOFOLLOW
     ) && S_ISREG(lbuf.st_mode));
     close(dfd);
     return ret;

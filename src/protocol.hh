@@ -40,8 +40,6 @@
  *         then responds MSG_OK
  * CLIENT: consumes MSG_OK, sends MSG_DATA with user id attached
  * SERVER: responds MSG_OK
- * CLIENT: consumes MSG_OK, sends MSG_DATA with group id attached
- * SERVER: responds MSG_OK
  * CLIENT: consumes MSG_OK, sends MSG_DATA with homedir length attached
  * SERVER: validates, allocates a data buffer and responds MSG_OK
  * loop:
