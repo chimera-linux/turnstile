@@ -14,6 +14,7 @@ int dir_make_at(int dfd, char const *dname, mode_t mode) {
     int sdfd = openat(dfd, dname, O_RDONLY | O_NOFOLLOW);
     struct stat st;
     int reterr = 0;
+    int omask = umask(0);
     if (fstat(sdfd, &st) || !S_ISDIR(st.st_mode)) {
         close(sdfd);
         if (mkdirat(dfd, dname, mode)) {
@@ -40,6 +41,7 @@ int dir_make_at(int dfd, char const *dname, mode_t mode) {
     }
     return sdfd;
 ret_err:
+    umask(omask);
     if (sdfd >= 0) {
         close(sdfd);
     }
@@ -60,6 +62,7 @@ bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
     char *sl = std::strchr(dirbase, '/');
     print_dbg("rundir: make directory %s", rundir);
     /* recursively create all parent paths */
+    mode_t omask = umask(022);
     while (sl) {
         *sl = '\0';
         print_dbg("rundir: try make parent %s", rundir);
@@ -76,12 +79,14 @@ bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
             );
             close(bfd);
             close(cfd);
+            umask(omask);
             return false;
         }
         if (!S_ISDIR(dstat.st_mode)) {
             print_err("rundir: non-directory encountered at %s", rundir);
             close(bfd);
             close(cfd);
+            umask(omask);
             return false;
         }
         close(bfd);
@@ -90,6 +95,7 @@ bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
         dirbase = sl + 1;
         sl = std::strchr(dirbase, '/');
     }
+    umask(omask);
     /* now create rundir or at least sanitize its perms */
     if (
         (fstatat(bfd, dirbase, &dstat, AT_SYMLINK_NOFOLLOW) < 0) ||
