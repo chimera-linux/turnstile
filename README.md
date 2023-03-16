@@ -110,7 +110,7 @@ is a special file descriptor that is passed to the backend. The service
 manager (or possibly even the backend itself) can write a string of data
 in there when it's ready enough to accept outside commands.
 
-Once tha that has happened, the daemon will invoke the backend once more, this
+Once that has happened, the daemon will invoke the backend once more, this
 time with the `ready` action and as a regular (non-login) shell script, without
 any special environment setup. It passes the previously received string as
 an argument. The backend then has the responsibility to wait as long as it
@@ -147,7 +147,7 @@ Regardless of the default behavior, it can be altered in the configuration file.
 It is possible to configure the sessions to linger, so the user services will
 remain up even after logout. This can be done either per-user, or globally.
 
-Note that session peristence relies on rundir creation being enabled, as in
+Note that session persistence relies on rundir creation being enabled, as in
 the other case the daemon cannot know whether the other management solution
 is not deleting the rundir, and many user services rely on its existence.
 This can be manually overridden with an environment variable, at your own
@@ -191,3 +191,21 @@ The dependencies are:
 The Dinit backend requires at least Dinit 0.16 or newer, older versions will
 not work. The project also installs an example Dinit service for starting
 the daemon.
+
+## Support for other service managers
+
+If you write a new backend or other functionality related to other service
+managers, it would be appreciated if you could submit it upstream (i.e. here).
+This way we can ensure that other backends stay aligned with the upstream
+design goals and will not break over time.
+
+Additionally, you can get review here, which should ultimately result in
+more consistent and better quality code. Turnstile is specifically designed
+to help distro interoperability.
+
+Support for other operating systems (such as the BSDs) is also welcome. While
+the project tries to be portable, it is being tested solely on Linux. Therefore,
+testing on other operating systems and potential fixes (please send patches)
+are very helpful. Ultimately I would like the project to serve as a vendor-neutral
+interface on all Unix-like systems, so that desktop environments and other
+projects have a quality baseline to target.
