@@ -398,8 +398,14 @@ static bool get_peer_euid(int fd, unsigned int &euid) {
 #elif defined(__sun) || defined(sun)
     /* Solaris */
     ucred_t *cr = nullptr;
-    if (!getpeerucred(fd, &cr) && (ucred_geteuid(cr) != uid_t(-1))) {
-        euid = ucred_geteuid(cr);
+    if (getpeerucred(fd, &cr) < 0) {
+        return false;
+    }
+    auto uid = ucred_geteuid(cr);
+    ucred_free(cr);
+    if (uid != uid_t(-1)) {
+        euid = uid;
+        return true;
     }
 #else
 #error Please implement credentials checking for your OS.
