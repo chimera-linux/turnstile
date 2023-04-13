@@ -977,6 +977,13 @@ int main(int argc, char **argv) {
             print_err("pipe failed (%s)", strerror(errno));
             return 1;
         }
+        if (
+            (fcntl(sigpipe[0], F_SETFD, FD_CLOEXEC) < 0) ||
+            (fcntl(sigpipe[1], F_SETFD, FD_CLOEXEC) < 0)
+        ) {
+            print_err("fcntl failed (%s)", strerror(errno));
+            return 1;
+        }
         auto &pfd = fds.emplace_back();
         pfd.fd = sigpipe[0];
         pfd.events = POLLIN;
