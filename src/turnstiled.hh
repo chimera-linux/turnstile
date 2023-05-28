@@ -27,6 +27,8 @@ struct session {
     std::string username{};
     /* the string the backend 'run' hands over to 'ready' */
     std::string srvstr{};
+    /* the user's shell */
+    std::string shell{};
     /* home directory path received from the PAM module */
     char *homedir = nullptr;
     /* the PID of the service manager process we are currently managing */

@@ -354,6 +354,7 @@ static bool handle_session_new(
     sess->uid = pwd->pw_uid;
     sess->gid = pwd->pw_gid;
     sess->username = pwd->pw_name;
+    sess->shell = pwd->pw_shell;
     std::free(sess->homedir);
     sess->homedir = it.homedir;
     sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];

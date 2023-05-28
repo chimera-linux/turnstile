@@ -247,7 +247,7 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
     }
     /* add our environment defaults if not already set */
     if (!have_env_shell) {
-        add_str("SHELL=" _PATH_BSHELL);
+        add_str("SHELL=", sess.shell.data());
     }
     if (!have_env_user) {
         add_str("USER=", sess.username.data());
