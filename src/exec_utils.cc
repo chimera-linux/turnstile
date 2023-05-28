@@ -69,7 +69,7 @@ static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
     }
     auto pst = pam_setcred(pamh, PAM_ESTABLISH_CRED);
     if (pst != PAM_SUCCESS) {
-        perror("srv: pam_setcred");
+        fprintf(stderr, "srv: pam_setcred: %s", pam_strerror(pamh, pst));
         pam_end(pamh, pst);
         return false;
     }
@@ -84,13 +84,15 @@ static pam_handle_t *dpam_begin(session const &sess) {
     pam_handle_t *pamh = nullptr;
     auto pst = pam_start(DPAM_SERVICE, sess.username.data(), &cnv, &pamh);
     if (pst != PAM_SUCCESS) {
-        perror("srv: pam_start");
+        fprintf(stderr, "srv: pam_start: %s", pam_strerror(pamh, pst));
         return nullptr;
     }
     /* set the originating user while at it */
     pst = pam_set_item(pamh, PAM_RUSER, "root");
     if (pst != PAM_SUCCESS) {
-        perror("srv: pam_set_item(PAM_RUSER)");
+        fprintf(
+            stderr, "srv: pam_set_item(PAM_RUSER): %s", pam_strerror(pamh, pst)
+        );
         pam_end(pamh, pst);
         return nullptr;
     }
@@ -124,7 +126,7 @@ static bool dpam_open(pam_handle_t *pamh) {
 
     auto pst = pam_open_session(pamh, 0);
     if (pst != PAM_SUCCESS) {
-        perror("srv: pam_open_session");
+        fprintf(stderr, "srv: pam_open_session: %s", pam_strerror(pamh, pst));
         pam_setcred(pamh, PAM_DELETE_CRED | PAM_SILENT);
         pam_end(pamh, pst);
         return false;
