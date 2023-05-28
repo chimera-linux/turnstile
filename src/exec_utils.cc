@@ -173,7 +173,7 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
         }
     }
     /* change directory to home, fall back to / or error */
-    if ((chdir(sess.homedir) < 0) || (chdir("/") < 0)) {
+    if ((chdir(sess.homedir.data()) < 0) || (chdir("/") < 0)) {
         perror("srv: failed to change directory");
     }
     /* set up service manager tempdir after we drop privileges */
@@ -256,7 +256,7 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
         add_str("LOGNAME=", sess.username.data());
     }
     if (!have_env_home) {
-        add_str("HOME=", sess.homedir);
+        add_str("HOME=", sess.homedir.data());
     }
     if (!have_env_uid) {
         add_str("UID=", sess.uids);

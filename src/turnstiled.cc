@@ -65,33 +65,11 @@ cfg_data *cdata = nullptr;
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
 
-struct pending_conn {
-    pending_conn():
-        pending_uid{1}, pending_hdir{1}
-    {}
-    int conn = -1;
-    char *homedir = nullptr;
-    unsigned int peer_uid = UINT_MAX;
-    unsigned int uid = 0;
-    unsigned int dirleft = 0;
-    unsigned int dirgot  = 0;
-    unsigned int pending_uid: 1;
-    unsigned int pending_hdir: 1;
-
-    ~pending_conn() {
-        std::free(homedir);
-    }
-};
-
 session::session() {
     timer_sev.sigev_notify = SIGEV_SIGNAL;
     timer_sev.sigev_signo = SIGALRM;
     timer_sev.sigev_value.sival_ptr = this;
     srvstr.reserve(256);
-}
-
-session::~session() {
-    std::free(homedir);
 }
 
 void session::remove_sdir() {
@@ -125,7 +103,6 @@ void session::disarm_timer() {
 }
 
 static std::vector<session> sessions;
-static std::vector<pending_conn> pending_conns;
 
 /* file descriptors for poll */
 static std::vector<pollfd> fds;
@@ -252,118 +229,6 @@ static bool msg_send(int fd, unsigned int msg) {
     return (msg != MSG_ERR);
 }
 
-static bool handle_session_new(
-    int fd, unsigned int msg, pending_conn &it, bool &done
-) {
-    /* first message after welcome */
-    if (it.pending_uid) {
-        if ((it.peer_uid != 0) && (msg != it.peer_uid)) {
-            print_dbg("msg: uid mismatch (peer: %u, got: %u)", it.peer_uid, msg);
-            return false;
-        }
-        print_dbg("msg: welcome uid %u", msg);
-        it.uid = msg;
-        it.pending_uid = 0;
-        return true;
-    }
-    if (it.pending_hdir) {
-        print_dbg("msg: getting homedir for %u (length: %u)", it.uid, msg);
-        /* no length or too long; reject */
-        if (!msg || (msg > DIRLEN_MAX)) {
-            return false;
-        }
-        it.homedir = static_cast<char *>(std::malloc(msg + 1));
-        if (!it.homedir) {
-            print_dbg("msg: failed to alloc %u bytes for %u", msg, it.uid);
-            return false;
-        }
-        it.dirgot = 0;
-        it.dirleft = msg;
-        it.pending_hdir = 0;
-        return true;
-    }
-    if (it.dirleft) {
-        auto pkt = MSG_SBYTES(it.dirleft);
-        std::memcpy(&it.homedir[it.dirgot], &msg, pkt);
-        it.dirgot += pkt;
-        it.dirleft -= pkt;
-    }
-    /* not done receiving homedir yet */
-    if (it.dirleft) {
-        return true;
-    }
-    /* done receiving, sanitize */
-    it.homedir[it.dirgot] = '\0';
-    auto hlen = std::strlen(it.homedir);
-    if (!hlen) {
-        return false;
-    }
-    while (it.homedir[hlen - 1] == '/') {
-        it.homedir[--hlen] = '\0';
-    }
-    if (!hlen) {
-        return false;
-    }
-    /* must be absolute */
-    if (it.homedir[0] != '/') {
-        return false;
-    }
-    /* ensure the homedir exists and is a directory,
-     * this also ensures the path is safe to use in
-     * unsanitized contexts without escaping
-     */
-    if (struct stat s; stat(it.homedir, &s) || !S_ISDIR(s.st_mode)) {
-        return false;
-    }
-    /* acknowledge the session */
-    print_dbg("msg: welcome %u (%s)", it.uid, it.homedir);
-    session *sess = nullptr;
-    for (auto &sessr: sessions) {
-        if (sessr.uid == it.uid) {
-            sess = &sessr;
-            break;
-        }
-    }
-    auto *pwd = getpwuid(it.uid);
-    if (!pwd) {
-        print_err("msg: failed to get pwd for %u (%s)", it.uid, strerror(errno));
-        return false;
-    }
-    if (!sess) {
-        sess = &sessions.emplace_back();
-    }
-    /* write uid and gid strings */
-    std::snprintf(sess->uids, sizeof(sess->uids), "%u", pwd->pw_uid);
-    std::snprintf(sess->gids, sizeof(sess->gids), "%u", pwd->pw_gid);
-    for (auto c: sess->conns) {
-        if (c == fd) {
-            print_dbg("msg: already have session %u", pwd->pw_uid);
-            return false;
-        }
-    }
-    std::memset(sess->rundir, 0, sizeof(sess->rundir));
-    if (!cfg_expand_rundir(
-        sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
-        sess->uids, sess->gids
-    )) {
-        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
-        return false;
-    }
-    print_dbg("msg: setup session %u", pwd->pw_uid);
-    sess->conns.push_back(fd);
-    sess->uid = pwd->pw_uid;
-    sess->gid = pwd->pw_gid;
-    sess->username = pwd->pw_name;
-    sess->shell = pwd->pw_shell;
-    std::free(sess->homedir);
-    sess->homedir = it.homedir;
-    sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];
-    it.homedir = nullptr;
-    done = true;
-    /* reply */
-    return true;
-}
-
 static bool get_peer_euid(int fd, unsigned int &euid) {
 #if defined(SO_PEERCRED)
     /* Linux or OpenBSD */
@@ -414,6 +279,70 @@ static bool get_peer_euid(int fd, unsigned int &euid) {
     return false;
 }
 
+static session *handle_session_new(int fd, unsigned int uid) {
+    /* check for credential mismatch */
+    unsigned int puid = UINT_MAX;
+    if (!get_peer_euid(fd, puid)) {
+        print_dbg("msg: could not get peer credentials");
+        return nullptr;
+    }
+    if (uid != puid) {
+        print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
+        return nullptr;
+    }
+    /* acknowledge the session */
+    print_dbg("msg: welcome %u", uid);
+    session *sess = nullptr;
+    for (auto &sessr: sessions) {
+        if (sessr.uid == uid) {
+            sess = &sessr;
+            break;
+        }
+    }
+    auto *pwd = getpwuid(uid);
+    if (!pwd) {
+        print_err("msg: failed to get pwd for %u (%s)", uid, strerror(errno));
+        return nullptr;
+    }
+    if (pwd->pw_dir[0] != '/') {
+        print_err(
+            "msg: homedir of %s (%u) is not absolute (%s)", pwd->pw_name,
+            uid, pwd->pw_dir
+        );
+        return nullptr;
+    }
+    if (!sess) {
+        sess = &sessions.emplace_back();
+    }
+    /* write uid and gid strings */
+    std::snprintf(sess->uids, sizeof(sess->uids), "%u", pwd->pw_uid);
+    std::snprintf(sess->gids, sizeof(sess->gids), "%u", pwd->pw_gid);
+    for (auto c: sess->conns) {
+        if (c == fd) {
+            print_dbg("msg: already have session %u", pwd->pw_uid);
+            return nullptr;
+        }
+    }
+    std::memset(sess->rundir, 0, sizeof(sess->rundir));
+    if (!cfg_expand_rundir(
+        sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
+        sess->uids, sess->gids
+    )) {
+        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
+        return nullptr;
+    }
+    print_dbg("msg: setup session %u", pwd->pw_uid);
+    sess->conns.push_back(fd);
+    sess->uid = pwd->pw_uid;
+    sess->gid = pwd->pw_gid;
+    sess->username = pwd->pw_name;
+    sess->homedir = pwd->pw_dir;
+    sess->shell = pwd->pw_shell;
+    sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];
+    /* reply */
+    return sess;
+}
+
 static bool handle_read(int fd) {
     unsigned int msg;
     auto ret = recv(fd, &msg, sizeof(msg), 0);
@@ -431,16 +360,7 @@ static bool handle_read(int fd) {
     switch (msg & MSG_TYPE_MASK) {
         case MSG_START: {
             /* new login, register it */
-            auto &pc = pending_conns.emplace_back();
-            pc.conn = fd;
-            if (!get_peer_euid(fd, pc.peer_uid)) {
-                print_dbg("msg: could not get peer credentials");
-                return msg_send(fd, MSG_ERR);
-            }
-            return msg_send(fd, MSG_OK);
-        }
-        case MSG_OK: {
-            auto *sess = get_session(fd);
+            auto *sess = handle_session_new(fd, msg >> MSG_TYPE_BITS);
             if (!sess) {
                 return msg_send(fd, MSG_ERR);
             }
@@ -503,29 +423,6 @@ static bool handle_read(int fd) {
             auto *rstr = sess->rundir;
             std::memcpy(&v, rstr + rlen - msg, MSG_SBYTES(msg));
             return msg_send(fd, MSG_ENCODE(v));
-        }
-        case MSG_DATA: {
-            msg >>= MSG_TYPE_BITS;
-            /* can be uid, homedir size, homedir data,
-             * rundir size or rundir data
-             */
-            for (
-                auto it = pending_conns.begin();
-                it != pending_conns.end(); ++it
-            ) {
-                if (it->conn == fd) {
-                    bool done = false;
-                    if (!handle_session_new(fd, msg, *it, done)) {
-                        pending_conns.erase(it);
-                        return msg_send(fd, MSG_ERR);
-                    }
-                    if (done) {
-                        pending_conns.erase(it);
-                    }
-                    return msg_send(fd, MSG_OK);
-                }
-            }
-            break;
         }
         default:
             break;
@@ -915,7 +812,6 @@ int main(int argc, char **argv) {
     }
 
     /* prealloc a bunch of space */
-    pending_conns.reserve(8);
     sessions.reserve(16);
     fds.reserve(64);
 

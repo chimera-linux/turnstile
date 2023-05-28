@@ -35,18 +35,7 @@
  *
  * from there, the following sequence happens:
  *
- * CLIENT: sends MSG_START and enters a message loop (state machine)
- * SERVER: receives it and adds the session into pending connections,
- *         then responds MSG_OK
- * CLIENT: consumes MSG_OK, sends MSG_DATA with user id attached
- * SERVER: responds MSG_OK
- * CLIENT: consumes MSG_OK, sends MSG_DATA with homedir length attached
- * SERVER: validates, allocates a data buffer and responds MSG_OK
- * loop:
- *   CLIENT: consumes MSG_OK, if there is any of homedir left unsent,
- *           it sends it; otherwise loop ends
- *   SERVER: adds to buffer, responds MSG_OK
- * CLIENT: sends MSG_OK to confirm everything is ready on its side
+ * CLIENT: sends MSG_START with uid and enters a message loop (state machine)
  * SERVER: if service manager for the user is already running, responds
  *         with MSG_OK_DONE (with export_dbus attached as aux data); else
  *         initiates startup and responds with MSG_OK_WAIT
@@ -65,11 +54,7 @@
 
 /* this is a regular unsigned int */
 enum {
-    /* sent by the server as an acknowledgement of a message, and by
-     * the client once it has sent all the session info
-     */
-    MSG_OK = 0x1,
-    MSG_OK_WAIT, /* login, wait */
+    MSG_OK_WAIT = 0x1, /* login, wait */
     MSG_OK_DONE, /* ready, proceed */
     MSG_REQ_RLEN, /* rundir length request */
     MSG_REQ_RDATA, /* rundir string request + how much is left */

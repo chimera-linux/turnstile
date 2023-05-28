@@ -68,9 +68,8 @@ static bool open_session(
     std::memcpy(saddr.sun_path, DAEMON_SOCK, sizeof(DAEMON_SOCK));
 
     char const *puser;
-    char const *hdir;
     passwd *pwd;
-    int ret, hlen, rlen;
+    int ret, rlen;
 
     auto send_msg = [sock](unsigned int msg) {
         if (write(*sock, &msg, sizeof(msg)) < 0) {
@@ -89,53 +88,21 @@ static bool open_session(
     }
     uid = pwd->pw_uid;
 
-    hdir = pam_getenv(pamh, "HOME");
-    if (!hdir || !hdir[0]) {
-        hdir = pwd->pw_dir;
-    }
-    if (!hdir || !hdir[0]) {
-        goto err;
-    }
-    hlen = strlen(hdir);
-    if (hlen > DIRLEN_MAX) {
-        goto err;
-    }
-    /* this is verified serverside too but bail out early if needed */
-    if (struct stat s; stat(hdir, &s) || !S_ISDIR(s.st_mode)) {
-        goto err;
-    }
-
     if (connect(
         *sock, reinterpret_cast<sockaddr const *>(&saddr), sizeof(saddr)
     ) < 0) {
         goto err;
     }
 
-    if (!send_msg(MSG_START)) {
+    if (!send_msg(MSG_ENCODE_AUX(pwd->pw_uid, MSG_START))) {
         goto err;
     }
     /* main message loop */
     {
         unsigned int msg;
         unsigned int state = 0;
-        bool sent_uid = false;
-        bool sent_hlen = false;
         bool got_rlen = false;
         char *rbuf = orbuf;
-
-        auto send_strpkt = [&send_msg](char const *&sdir, int &slen) {
-            unsigned int pkt = 0;
-            auto psize = MSG_SBYTES(slen);
-            std::memcpy(&pkt, sdir, psize);
-            pkt <<= MSG_TYPE_BITS;
-            pkt |= MSG_DATA;
-            if (!send_msg(pkt)) {
-                return false;
-            }
-            sdir += psize;
-            slen -= psize;
-            return true;
-        };
 
         for (;;) {
             ret = read(*sock, &msg, sizeof(msg));
@@ -144,40 +111,6 @@ static bool open_session(
             }
             switch (state) {
                 case 0:
-                    /* session not established yet */
-                    if (msg != MSG_OK) {
-                        goto err;
-                    }
-                    /* send uid */
-                    if (!sent_uid) {
-                        if (!send_msg(MSG_ENCODE(pwd->pw_uid))) {
-                            goto err;
-                        }
-                        sent_uid = true;
-                        break;
-                    }
-                    /* send homedir len */
-                    if (!sent_hlen) {
-                        if (!send_msg(MSG_ENCODE(hlen))) {
-                            goto err;
-                        }
-                        sent_hlen = true;
-                        break;
-                    }
-                    /* send a piece of homedir */
-                    if (hlen) {
-                        if (!send_strpkt(hdir, hlen)) {
-                            goto err;
-                        }
-                        break;
-                    }
-                    /* send clientside OK */
-                    state = msg;
-                    if (!send_msg(MSG_OK)) {
-                        goto err;
-                    }
-                    break;
-                case MSG_OK:
                 case MSG_OK_WAIT:
                     /* if started, get the rundir back; else block
                      *
@@ -192,7 +125,7 @@ static bool open_session(
                             goto err;
                         }
                         continue;
-                    } else if ((state == MSG_OK) && (msg == MSG_OK_WAIT)) {
+                    } else if ((state == 0) && (msg == MSG_OK_WAIT)) {
                         state = msg;
                         continue;
                     }

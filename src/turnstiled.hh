@@ -29,8 +29,8 @@ struct session {
     std::string srvstr{};
     /* the user's shell */
     std::string shell{};
-    /* home directory path received from the PAM module */
-    char *homedir = nullptr;
+    /* the user's home directory */
+    std::string homedir{};
     /* the PID of the service manager process we are currently managing */
     pid_t srv_pid = -1;
     /* the PID of the backend "ready" process that reports final readiness */
@@ -67,7 +67,6 @@ struct session {
     char uids[32], gids[32];
 
     session();
-    ~session();
     void remove_sdir();
     bool arm_timer(std::time_t);
     void disarm_timer();
