@@ -286,7 +286,7 @@ static session *handle_session_new(int fd, unsigned int uid) {
         print_dbg("msg: could not get peer credentials");
         return nullptr;
     }
-    if (uid != puid) {
+    if ((puid != 0) && (uid != puid)) {
         print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
         return nullptr;
     }
