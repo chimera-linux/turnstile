@@ -17,6 +17,7 @@
 #include <algorithm>
 
 #include <pwd.h>
+#include <endian.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/stat.h>
@@ -160,6 +161,7 @@ static bool open_session(
                     }
                     /* we are receiving the string... */
                     int pkts = MSG_SBYTES(rlen);
+                    msg = htole32(msg);
                     std::memcpy(rbuf, &msg, pkts);
                     rbuf += pkts;
                     rlen -= pkts;

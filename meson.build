@@ -49,6 +49,8 @@ configure_file(output: 'config.hh', configuration: conf_data)
 
 extra_inc = [include_directories('src')]
 
+add_project_arguments('-D_BSD_SOURCE', language: 'cpp')
+
 daemon_sources = [
     'src/turnstiled.cc',
     'src/fs_utils.cc',

@@ -22,6 +22,7 @@
 #include <pwd.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <endian.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -422,7 +423,7 @@ static bool handle_read(int fd) {
             }
             auto *rstr = sess->rundir;
             std::memcpy(&v, rstr + rlen - msg, MSG_SBYTES(msg));
-            return msg_send(fd, MSG_ENCODE(v));
+            return msg_send(fd, MSG_ENCODE(le32toh(v)));
         }
         default:
             break;
