@@ -1,0 +1,31 @@
+#!/bin/sh
+# Copyright 2023 classabbyamp <dev@placeviolette.net>
+# License: BSD-2-Clause
+
+usage() {
+	cat <<-EOF
+	turnstile-update-runit-env [VAR] ...
+	Updates values in the shared chpst(8) env dir.
+	
+	If VAR is a variable name, the value is taken from the environment.
+	If VAR is VAR=VAL, sets VAR to VAL.
+	EOF
+}
+
+. @CONF_PATH@/backend/runit.conf
+
+if [ $# -eq 0 ] || [ "$1" = "-h" ]; then
+	usage
+	exit 0
+fi
+
+for var; do
+	case "$var" in
+	*=*)
+		eval echo "${var#*=}" > "$service_env_dir/${var%%=*}"
+		;;
+	*)
+		eval echo '$'"$var" > "$service_env_dir/$var"
+		;;
+	esac
+done

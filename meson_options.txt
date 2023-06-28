@@ -3,6 +3,16 @@ option('dinit',
     description: 'Whether to install Dinit-related backend and data'
 )
 
+option('runit',
+    type: 'feature', value: 'disabled',
+    description: 'Whether to install runit-related backend and data'
+)
+
+option('default_backend',
+    type: 'string', value: '',
+    description: 'Override the default backend'
+)
+
 option('rundir',
     type: 'string', value: '/run',
     description: 'Where the base directory will be located'

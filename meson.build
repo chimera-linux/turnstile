@@ -22,6 +22,7 @@ scdoc_dep = dependency(
 )
 
 have_dinit = get_option('dinit').enabled()
+have_runit = get_option('runit').enabled()
 
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
@@ -101,10 +102,15 @@ install_data(
 )
 
 # decide the default backend
-if have_dinit
-    default_backend = 'dinit'
-else
-    default_backend = 'none'
+default_backend = get_option('default_backend')
+if default_backend == ''
+    if have_dinit
+        default_backend = 'dinit'
+    elif have_runit
+        default_backend = 'runit'
+    else
+        default_backend = 'none'
+    endif
 endif
 
 uconf_data = configuration_data()
