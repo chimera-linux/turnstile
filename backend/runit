@@ -1,0 +1,88 @@
+#!/bin/sh
+#
+# This is the turnstile runit backend. It accepts the action as its first
+# argument, which is either "ready", "run", or "stop". In case of "run", it's
+# invoked directly through /bin/sh as if it was a login shell, and therefore
+# it has acccess to shell profile, and the shebang is functionally useless but
+# should be preserved as a convention. For "ready", it's a regular shell.
+#
+# Arguments for "ready":
+#
+# ready_sv: path to the readiness service
+#
+# Arguments for "run":
+#
+# ready_p:  readiness pipe (fifo). has the path to the ready service written to it.
+# srvdir:   unused
+# confdir:  the path where turnstile's configuration data resides, used
+#           to source the configuration file
+#
+# Arguments for "stop":
+#
+# pid:      the PID of the service manager to stop (gracefully); it should
+#           terminate the services it's running and then stop itself
+#
+# Copyright 2023 classabbyamp <dev@placeviolette.net>
+# License: BSD-2-Clause
+
+case "$1" in
+    run) ;;
+    ready)
+        if [ -z "$2" ] || [ ! -d "$2" ]; then
+            echo "runit: invalid readiness service '$2'" >&2
+            exit 69
+        fi
+        exec sv start "$2" >&2
+        ;;
+    stop)
+        # If runsvdir receives a HUP signal, it sends a TERM signal to each
+        # runsv(8) process it is monitoring and then exits with 111.
+        exec kill -s HUP "$2"
+        ;;
+    *)
+        exit 32
+        ;;
+esac
+
+RUNIT_READY_PIPE="$2"
+RUNIT_CONF="$4/runit.conf"
+
+if [ ! -p "$RUNIT_READY_PIPE" ]; then
+    echo "runit: invalid input argument(s)" >&2
+    exit 69
+fi
+
+if [ -z "$HOME" ] || [ ! -d "$HOME" ]; then
+    echo "runit: invalid home directory" >&2
+    exit 70
+fi
+
+shift $#
+
+# be strict
+set -e
+
+# source the conf
+[ -r "$RUNIT_CONF" ] && . "$RUNIT_CONF"
+
+# set some defaults in case the conf cannot be read or is mangled
+: "${ready_sv:="turnstile-ready"}"
+: "${services_dir:="${HOME}/.config/service"}"
+: "${service_env_dir:="${HOME}/.config/service-env"}"
+
+mkdir -p "${services_dir}/${ready_sv}" > /dev/null 2>&1
+mkdir -p "${service_env_dir}" > /dev/null 2>&1
+
+# this must succeed
+cat << EOF > "${services_dir}/${ready_sv}/run"
+#!/bin/sh
+[ -r ./conf ] && . ./conf
+[ -n "\$core_services" ] && SVDIR=".." sv start \$core_services
+[ -p "$RUNIT_READY_PIPE" ] && printf "${services_dir}/${ready_sv}" > "$RUNIT_READY_PIPE"
+exec pause
+EOF
+chmod +x "${services_dir}/${ready_sv}/run"
+
+exec env TURNSTILE_ENV_DIR="$service_env_dir" \
+    runsvdir -P "$services_dir" \
+    'log: ...........................................................................................................................................................................................................................................................................................................................................................................................................'
