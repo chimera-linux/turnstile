@@ -2,10 +2,12 @@
 
 #include <pwd.h>
 #include <grp.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <paths.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/resource.h>
 
 #include "turnstiled.hh"
@@ -121,6 +123,10 @@ static void sanitize_limits() {
 }
 
 static bool dpam_open(pam_handle_t *pamh) {
+    if (!pamh) {
+        return false;
+    }
+
     /* before opening session, do not rely on just PAM and sanitize a bit */
     sanitize_limits();
 
@@ -129,25 +135,6 @@ static bool dpam_open(pam_handle_t *pamh) {
         fprintf(stderr, "srv: pam_open_session: %s", pam_strerror(pamh, pst));
         pam_setcred(pamh, PAM_DELETE_CRED | PAM_SILENT);
         pam_end(pamh, pst);
-        return false;
-    }
-    return true;
-}
-
-static bool dpam_setup(pam_handle_t *pamh, session const &sess) {
-    if (!pamh) {
-        return false;
-    }
-    if (!dpam_open(pamh)) {
-        return false;
-    }
-    /* change identity */
-    if (setgid(sess.gid) != 0) {
-        perror("srv: failed to set gid");
-        return false;
-    }
-    if (setuid(sess.uid) != 0) {
-        perror("srv: failed to set uid");
         return false;
     }
     return true;
@@ -165,12 +152,157 @@ static void dpam_finalize(pam_handle_t *pamh) {
     pam_end(pamh, PAM_SUCCESS | PAM_DATA_SILENT);
 }
 
-void srv_child(session &sess, char const *backend, char const *pipenum) {
+static int term_count = 0;
+static int sigpipe[2] = {-1, -1};
+
+static void sig_handler(int sign) {
+    write(sigpipe[1], &sign, sizeof(sign));
+}
+
+static void fork_and_wait(pam_handle_t *pamh, int dpipe) {
+    int pst, status;
+    struct pollfd pfd;
+    sigset_t mask;
+    pid_t p;
+    /* set up event loop bits, before fork for simpler cleanup */
+    if (signal(SIGCHLD, sig_handler) == SIG_ERR) {
+        perror("srv: signal failed");
+        goto fail;
+    }
+    if (signal(SIGTERM, sig_handler) == SIG_ERR) {
+        perror("srv: signal failed");
+        goto fail;
+    }
+    if (pipe(sigpipe) < 0) {
+        perror("srv: pipe failed");
+        goto fail;
+    }
+    pfd.fd = sigpipe[0];
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    /* fork */
+    p = fork();
+    if (p == 0) {
+        /* child, return to exec */
+        close(sigpipe[0]);
+        close(sigpipe[1]);
+        return;
+    } else if (p < 0) {
+        perror("srv: fork failed");
+        goto fail;
+    }
+    /* ignore signals */
+    sigfillset(&mask);
+    sigdelset(&mask, SIGTERM);
+    sigdelset(&mask, SIGCHLD);
+    sigprocmask(SIG_SETMASK, &mask, nullptr);
+    /* make sure we don't block this pipe */
+    close(dpipe);
+    /* our own little event loop */
+    for (;;) {
+        auto pret = poll(&pfd, 1, -1);
+        if (pret < 0) {
+            /* interrupted by signal */
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("srv: poll failed");
+            goto fail;
+        } else if (pret == 0) {
+            continue;
+        }
+        int sign;
+        if (read(pfd.fd, &sign, sizeof(sign)) != sizeof(sign)) {
+            perror("srv: signal read failed");
+        }
+        if (sign == SIGTERM) {
+            kill(p, (term_count++ > 1) ? SIGKILL : SIGTERM);
+            continue;
+        }
+        /* SIGCHLD */
+        int wpid;
+        while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
+            if (wpid != p) {
+                continue;
+            }
+            goto done;
+        }
+    }
+done:
+    /* close session */
+    if (!pamh) {
+        goto estatus;
+    }
+    pst = pam_close_session(pamh, 0);
+    if (pst != PAM_SUCCESS) {
+        fprintf(stderr, "srv: pam_close_session: %s", pam_strerror(pamh, pst));
+        pam_end(pamh, pst);
+        goto fail;
+    }
+    /* finalize */
+    pam_setcred(pamh, PAM_DELETE_CRED);
+    pam_end(pamh, PAM_SUCCESS);
+estatus:
+    /* propagate exit status */
+    exit(WIFEXITED(status) ? WEXITSTATUS(status) : (WTERMSIG(status) + 128));
+fail:
+    exit(1);
+}
+
+/* dummy "service manager" child process with none backend */
+static void srv_dummy(int pipew) {
+    /* we're always ready, the dummy process just sleeps forever */
+    if (write(pipew, "poke", 5) != 5) {
+        perror("dummy: failed to poke the pipe");
+        return;
+    }
+    close(pipew);
+    /* block all signals except the ones we need to terminate */
+    sigset_t mask;
+    sigfillset(&mask);
+    /* kill/stop are ignored, but term is not */
+    sigdelset(&mask, SIGTERM);
+    sigprocmask(SIG_SETMASK, &mask, nullptr);
+    /* this will sleep until a termination signal wakes it */
+    pause();
+    /* in which case just exit */
+    exit(0);
+}
+
+void srv_child(
+    session &sess, char const *backend,
+    char const *pipenum, int dpipe, bool dummy
+) {
     pam_handle_t *pamh = nullptr;
-    if (getuid() == 0) {
-        /* setup pam session */
+    bool is_root = (getuid() == 0);
+    /* reset signals from parent */
+    signal(SIGCHLD, SIG_DFL);
+    signal(SIGALRM, SIG_DFL);
+    /* begin pam session setup */
+    if (is_root && !dummy) {
         pamh = dpam_begin(sess);
-        if (!dpam_setup(pamh, sess)) {
+        if (!dpam_open(pamh)) {
+            return;
+        }
+    }
+    /* handle the parent/child logic here
+     * if we're forking, only child makes it past this func
+     */
+    fork_and_wait(pamh, dpipe);
+    /* dummy service manager if requested */
+    if (dummy) {
+        srv_dummy(dpipe);
+        return;
+    }
+    /* drop privs */
+    if (is_root) {
+        /* change identity */
+        if (setgid(sess.gid) != 0) {
+            perror("srv: failed to set gid");
+            return;
+        }
+        if (setuid(sess.uid) != 0) {
+            perror("srv: failed to set uid");
             return;
         }
     }

@@ -112,26 +112,6 @@ static std::size_t npipes = 0;
 /* control IPC socket */
 static int ctl_sock;
 
-/* dummy "service manager" child process with none backend */
-static void srv_dummy(int pipew) {
-    /* we're always ready, the dummy process just sleeps forever */
-    if (write(pipew, "poke", 5) != 5) {
-        perror("dummy: failed to poke the pipe");
-        return;
-    }
-    close(pipew);
-    /* block all signals except the ones we need to terminate */
-    sigset_t mask;
-    sigfillset(&mask);
-    /* kill/stop are ignored, but term is not */
-    sigdelset(&mask, SIGTERM);
-    sigprocmask(SIG_SETMASK, &mask, nullptr);
-    /* this will sleep until a termination signal wakes it */
-    pause();
-    /* in which case just exit */
-    exit(0);
-}
-
 /* start the service manager instance for a session */
 static bool srv_start(session &sess) {
     int dpipe[2];
@@ -173,7 +153,7 @@ static bool srv_start(session &sess) {
     }
     /* here we'll receive the initial readiness string from the backend */
     if (pipe2(dpipe, O_NONBLOCK) < 0) {
-        print_err("srv: pipe failed (%s)", strerror(errno));
+        print_err("srv: pipe2 failed (%s)", strerror(errno));
         return false;
     }
     /* set up the timer, issue SIGLARM when it fires */
@@ -189,13 +169,11 @@ static bool srv_start(session &sess) {
     print_dbg("srv: launch");
     auto pid = fork();
     if (pid == 0) {
-        if (cdata->disable) {
-            srv_dummy(dpipe[1]);
-            exit(1);
-        }
         char pipestr[32];
         std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe[1]);
-        srv_child(sess, cdata->backend.data(), pipestr);
+        srv_child(
+            sess, cdata->backend.data(), pipestr, dpipe[1], cdata->disable
+        );
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));
@@ -606,8 +584,10 @@ static bool sig_handle_alrm(void *data) {
             );
             return false;
         }
-        /* waiting for service manager to die and it did not die, try kill */
-        kill(sess.term_pid, SIGKILL);
+        /* waiting for service manager to die and it did not die, try again
+         * this will propagate as SIGKILL in the double-forked process
+         */
+        kill(sess.term_pid, SIGTERM);
         sess.kill_tried = true;
         /* re-arm the timer, if that fails again, we give up */
         sess.arm_timer(kill_timeout);
@@ -634,17 +614,17 @@ static bool sig_handle_alrm(void *data) {
  * possibly clear the rundir (if managed)
  */
 static bool srv_reaper(pid_t pid) {
-    print_dbg("srv: check for restarts");
+    print_dbg("srv: reap %u", (unsigned int)pid);
     for (auto &sess: sessions) {
         if (pid == sess.srv_pid) {
             sess.srv_pid = -1;
             sess.start_pid = -1; /* we don't care anymore */
+            sess.disarm_timer();
             if (sess.srv_wait) {
                 /* failed without ever having signaled readiness
                  * let the login proceed but indicate an error
                  */
                 print_err("srv: died without notifying readiness");
-                sess.disarm_timer();
                 /* clear rundir if needed */
                 if (sess.manage_rdir) {
                     rundir_clear(sess.rundir);
