@@ -639,10 +639,13 @@ static bool srv_reaper(pid_t pid) {
                  * let the login proceed but indicate an error
                  */
                 print_err("srv: died without notifying readiness");
-                while (!sess.conns.empty()) {
-                    conn_term_sess(sess, sess.conns[0]);
-                }
                 sess.disarm_timer();
+                for (std::size_t j = 2; j < fds.size(); ++j) {
+                    if (conn_term_sess(sess, fds[j].fd)) {
+                        fds[j].fd = -1;
+                        fds[j].revents = 0;
+                    }
+                }
                 /* clear rundir if needed */
                 if (sess.manage_rdir) {
                     rundir_clear(sess.rundir);
