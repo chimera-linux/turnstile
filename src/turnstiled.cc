@@ -636,11 +636,19 @@ static bool srv_reaper(pid_t pid) {
             sess.start_pid = -1; /* we don't care anymore */
             if (sess.srv_wait) {
                 /* failed without ever having signaled readiness
-                 * this indicates that we'd probably just loop forever,
-                 * so bail out
+                 * let the login proceed but indicate an error
                  */
-                 print_err("srv: died without notifying readiness");
-                 return false;
+                print_err("srv: died without notifying readiness");
+                while (!sess.conns.empty()) {
+                    conn_term_sess(sess, sess.conns[0]);
+                }
+                sess.disarm_timer();
+                /* clear rundir if needed */
+                if (sess.manage_rdir) {
+                    rundir_clear(sess.rundir);
+                    sess.manage_rdir = false;
+                }
+                return true;
             }
             return srv_start(sess);
         } else if (pid == sess.start_pid) {
