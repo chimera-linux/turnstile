@@ -244,7 +244,7 @@ void srv_child(session &sess, char const *backend, char const *pipenum) {
             } else if (!strncmp(*penv, "XDG_RUNTIME_DIR=", 16)) {
                 have_env_rundir = true;
             }
-            add_str(*penv);
+            add_str(*penv++);
         }
     }
     /* add our environment defaults if not already set */
