@@ -569,6 +569,24 @@ fail:
     return false;
 }
 
+static bool drop_session(session &sess) {
+    /* terminate all connections belonging to this session */
+    print_dbg("turnstiled: drop session %u", sess.uid);
+    for (std::size_t j = 2; j < fds.size(); ++j) {
+        if (conn_term_sess(sess, fds[j].fd)) {
+            fds[j].fd = -1;
+            fds[j].revents = 0;
+        }
+    }
+    /* this should never happen unless we have a bug */
+    if (!sess.conns.empty()) {
+        print_err("turnstiled: conns not empty, it should be");
+        /* unrecoverable */
+        return false;
+    }
+    return true;
+}
+
 static bool sig_handle_alrm(void *data) {
     print_dbg("turnstiled: sigalrm");
     auto &sess = *static_cast<session *>(data);
@@ -596,20 +614,7 @@ static bool sig_handle_alrm(void *data) {
         return true;
     }
     /* terminate all connections belonging to this session */
-    print_dbg("turnstiled: drop session %u", sess.uid);
-    for (std::size_t j = 2; j < fds.size(); ++j) {
-        if (conn_term_sess(sess, fds[j].fd)) {
-            fds[j].fd = -1;
-            fds[j].revents = 0;
-        }
-    }
-    /* this should never happen unless we have a bug */
-    if (!sess.conns.empty()) {
-        print_err("turnstiled: conns not empty, it should be");
-        /* unrecoverable */
-        return false;
-    }
-    return true;
+    return drop_session(sess);
 }
 
 /* this is called upon receiving a SIGCHLD
@@ -640,18 +645,12 @@ static bool srv_reaper(pid_t pid) {
                  */
                 print_err("srv: died without notifying readiness");
                 sess.disarm_timer();
-                for (std::size_t j = 2; j < fds.size(); ++j) {
-                    if (conn_term_sess(sess, fds[j].fd)) {
-                        fds[j].fd = -1;
-                        fds[j].revents = 0;
-                    }
-                }
                 /* clear rundir if needed */
                 if (sess.manage_rdir) {
                     rundir_clear(sess.rundir);
                     sess.manage_rdir = false;
                 }
-                return true;
+                return drop_session(sess);
             }
             return srv_start(sess);
         } else if (pid == sess.start_pid) {
