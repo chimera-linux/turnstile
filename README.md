@@ -107,6 +107,19 @@ put `pam_elogind` or `pam_systemd` in there in order to have `logind`
 recognize the `turnstile` user session as a session (which allows it to
 be tracked by things using it, e.g. `polkitd`).
 
+Note that if you use `pam_systemd` or `pam_elogind` in `turnstiled` PAM
+script to register it as a session, it will be treated as a session without
+a seat. That means things like `polkit` may treat anything running within
+`turnstile` as a non-local session, and may not authenticate the processes.
+There is no way to get around this limitation outside of patching `polkit`,
+see Chimera's patches for reference. The alternative is not registering it
+at all, which will not make `polkit` work, as the session tracking logic in
+it will not be able to assign the processes to any UID and things will not
+work either. Systemd user services are treated specially by `systemd`, as
+they are recognized by the service manager, but are explicitly not considered
+to be a part of any session (as they are shared); that means `polkit` will
+fall back to looking up whether any seated session for the UID exists.
+
 After performing some initial preparation (which is backend-specific), the
 backend will simply replace itself with the desired service manager. There
 is a special file descriptor that is passed to the backend. The service
