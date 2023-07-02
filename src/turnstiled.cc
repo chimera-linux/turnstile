@@ -417,7 +417,7 @@ struct sig_data {
     void *datap;
 };
 
-static void chld_handler(int sign) {
+static void sig_handler(int sign) {
     sig_data d;
     d.sign = sign;
     d.datap = nullptr;
@@ -563,6 +563,22 @@ static bool drop_session(session &sess) {
         return false;
     }
     return true;
+}
+
+static bool sig_handle_term() {
+    print_dbg("turnstiled: term");
+    bool succ = true;
+    /* close the control socket */
+    close(ctl_sock);
+    /* drop sessions */
+    for (auto &sess: sessions) {
+        if (!drop_session(sess)) {
+            succ = false;
+        }
+    }
+    /* shrink the descriptor list to just signal pipe */
+    fds.resize(1);
+    return succ;
 }
 
 static bool sig_handle_alrm(void *data) {
@@ -786,20 +802,22 @@ static void sock_handle_conn() {
 
 int main(int argc, char **argv) {
     /* establish simple signal handler for sigchld */
-    if (signal(SIGCHLD, chld_handler) == SIG_ERR) {
-        perror("signal failed");
-        return 1;
+    {
+        struct sigaction sa{};
+        sa.sa_handler = sig_handler;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGCHLD, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
+        sigaction(SIGINT, &sa, nullptr);
     }
     /* establish more complicated signal handler for timers */
     {
         struct sigaction sa;
-        sa.sa_flags = SA_SIGINFO;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
         sa.sa_sigaction = timer_handler;
         sigemptyset(&sa.sa_mask);
-        if (sigaction(SIGALRM, &sa, nullptr) == -1) {
-            perror("sigaction failed");
-            return 1;
-        }
+        sigaction(SIGALRM, &sa, nullptr);
     }
 
     /* prealloc a bunch of space */
@@ -894,6 +912,7 @@ int main(int argc, char **argv) {
     print_dbg("turnstiled: main loop");
 
     std::size_t i = 0, curpipes;
+    bool term = false;
 
     /* main loop */
     for (;;) {
@@ -922,12 +941,36 @@ int main(int argc, char **argv) {
                 }
                 goto signal_done;
             }
+            if ((sd.sign == SIGTERM) || (sd.sign == SIGINT)) {
+                if (!sig_handle_term()) {
+                    return 1;
+                }
+                term = true;
+                goto signal_done;
+            }
             /* this is a SIGCHLD */
             if (!sig_handle_chld()) {
                 return 1;
             }
         }
 signal_done:
+        if (term) {
+            /* check if there are any more live processes */
+            bool die_now = true;
+            for (auto &sess: sessions) {
+                if ((sess.srv_pid >= 0) || (sess.term_pid >= 0)) {
+                    /* still waiting for something to die */
+                    die_now = false;
+                    break;
+                }
+            }
+            if (die_now) {
+                /* no more managed processes */
+                return 0;
+            }
+            /* the only thing to handle when terminating is signal pipe */
+            continue;
+        }
         /* check incoming connections on control socket */
         sock_handle_conn();
         /* check on pipes; npipes may be changed by fd_handle_pipe */

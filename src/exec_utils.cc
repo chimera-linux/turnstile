@@ -153,17 +153,10 @@ static void sig_handler(int sign) {
 static void fork_and_wait(pam_handle_t *pamh, int dpipe) {
     int pst, status;
     struct pollfd pfd;
+    struct sigaction sa{};
     sigset_t mask;
     pid_t p;
     /* set up event loop bits, before fork for simpler cleanup */
-    if (signal(SIGCHLD, sig_handler) == SIG_ERR) {
-        perror("srv: signal failed");
-        goto fail;
-    }
-    if (signal(SIGTERM, sig_handler) == SIG_ERR) {
-        perror("srv: signal failed");
-        goto fail;
-    }
     if (pipe(sigpipe) < 0) {
         perror("srv: pipe failed");
         goto fail;
@@ -187,6 +180,12 @@ static void fork_and_wait(pam_handle_t *pamh, int dpipe) {
     sigdelset(&mask, SIGTERM);
     sigdelset(&mask, SIGCHLD);
     sigprocmask(SIG_SETMASK, &mask, nullptr);
+    /* set up handlers for non-ignored signals */
+    sa.sa_handler = sig_handler;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
     /* make sure we don't block this pipe */
     close(dpipe);
     /* our own little event loop */
@@ -267,8 +266,14 @@ void srv_child(
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* reset signals from parent */
-    signal(SIGCHLD, SIG_DFL);
-    signal(SIGALRM, SIG_DFL);
+    struct sigaction sa{};
+    sa.sa_handler = SIG_DFL;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, nullptr);
+    sigaction(SIGALRM, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGINT, &sa, nullptr);
     /* begin pam session setup */
     if (is_root && !dummy) {
         pamh = dpam_begin(sess);
