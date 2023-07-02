@@ -1,7 +1,7 @@
 project(
     'turnstile',
     ['cpp'],
-    version: '0.1.4',
+    version: '0.1.5',
     default_options: [
         'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
         'cpp_eh=none', 'cpp_rtti=false',
