@@ -89,15 +89,6 @@ static pam_handle_t *dpam_begin(session const &sess) {
         fprintf(stderr, "srv: pam_start: %s", pam_strerror(pamh, pst));
         return nullptr;
     }
-    /* set the originating user while at it */
-    pst = pam_set_item(pamh, PAM_RUSER, "root");
-    if (pst != PAM_SUCCESS) {
-        fprintf(
-            stderr, "srv: pam_set_item(PAM_RUSER): %s", pam_strerror(pamh, pst)
-        );
-        pam_end(pamh, pst);
-        return nullptr;
-    }
     if (!dpam_setup_groups(pamh, sess)) {
         return nullptr;
     }
