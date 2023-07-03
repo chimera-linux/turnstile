@@ -169,11 +169,7 @@ static bool srv_start(session &sess) {
     print_dbg("srv: launch");
     auto pid = fork();
     if (pid == 0) {
-        char pipestr[32];
-        std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe[1]);
-        srv_child(
-            sess, cdata->backend.data(), pipestr, dpipe[1], cdata->disable
-        );
+        srv_child(sess, cdata->backend.data(), dpipe[1], cdata->disable);
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));

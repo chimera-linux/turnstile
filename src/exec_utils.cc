@@ -259,10 +259,7 @@ static void srv_dummy(int pipew) {
     exit(0);
 }
 
-void srv_child(
-    session &sess, char const *backend,
-    char const *pipenum, int dpipe, bool dummy
-) {
+void srv_child(session &sess, char const *backend, int dpipe, bool dummy) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* create a new session */
@@ -342,7 +339,11 @@ void srv_child(
     /* arg1: action */
     add_str("run");
     /* arg1: ready_fd */
-    add_str(pipenum);
+    {
+        char pipestr[32];
+        std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe);
+        add_str(pipestr);
+    }
     /* arg2: srvdir */
     add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
     /* arg3: confdir */

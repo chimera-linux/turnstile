@@ -86,9 +86,7 @@ bool cfg_expand_rundir(
 );
 
 /* service manager utilities */
-void srv_child(
-    session &sess, char const *backend, char const *pipenum, int p, bool d
-);
+void srv_child(session &sess, char const *backend, int p, bool d);
 bool srv_boot(session &sess, char const *backend);
 
 struct cfg_data {
