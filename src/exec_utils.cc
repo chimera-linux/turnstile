@@ -266,15 +266,6 @@ void srv_child(session &sess, char const *backend, int dpipe, bool dummy) {
     if (setsid() < 0) {
         perror("srv: setsid failed");
     }
-    /* reset signals from parent */
-    struct sigaction sa{};
-    sa.sa_handler = SIG_DFL;
-    sa.sa_flags = SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGCHLD, &sa, nullptr);
-    sigaction(SIGALRM, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-    sigaction(SIGINT, &sa, nullptr);
     /* begin pam session setup */
     if (is_root && !dummy) {
         pamh = dpam_begin(sess);

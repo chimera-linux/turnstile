@@ -111,6 +111,8 @@ static std::vector<pollfd> fds;
 static std::size_t npipes = 0;
 /* control IPC socket */
 static int ctl_sock;
+/* signal self-pipe */
+static int sigpipe[2] = {-1, -1};
 
 /* start the service manager instance for a session */
 static bool srv_start(session &sess) {
@@ -169,6 +171,21 @@ static bool srv_start(session &sess) {
     print_dbg("srv: launch");
     auto pid = fork();
     if (pid == 0) {
+        /* reset signals from parent */
+        struct sigaction sa{};
+        sa.sa_handler = SIG_DFL;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGCHLD, &sa, nullptr);
+        sigaction(SIGALRM, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
+        sigaction(SIGINT, &sa, nullptr);
+        /* close some descriptors, these can be reused */
+        close(userv_dirfd);
+        close(dpipe[0]);
+        close(sigpipe[0]);
+        close(sigpipe[1]);
+        /* and run the session */
         srv_child(sess, cdata->backend.data(), dpipe[1], cdata->disable);
         exit(1);
     } else if (pid < 0) {
@@ -405,8 +422,6 @@ static bool handle_read(int fd) {
     /* unexpected message, terminate the connection */
     return false;
 }
-
-static int sigpipe[2] = {-1, -1};
 
 struct sig_data {
     int sign;
