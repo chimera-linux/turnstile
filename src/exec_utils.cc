@@ -265,6 +265,10 @@ void srv_child(
 ) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
+    /* create a new session */
+    if (setsid() < 0) {
+        perror("srv: setsid failed");
+    }
     /* reset signals from parent */
     struct sigaction sa{};
     sa.sa_handler = SIG_DFL;
