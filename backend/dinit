@@ -15,8 +15,8 @@
 #
 # Arguments for "run":
 #
-# ready_fd: file descriptor that should be poked with a string; this will
-#           be passed to the "ready" script of the sequence as its sole
+# ready_p:  path to named pipe (fifo) that should be poked with a string; this
+#           will be passed to the "ready" script of the sequence as its sole
 #           argument (here this is a control socket path)
 # srvdir:   an internal directory that can be used by the service manager
 #           for any purpose (usually to keep track of its state)
@@ -47,11 +47,11 @@ case "$1" in
         ;;
 esac
 
-DINIT_READY_FD="$2"
+DINIT_READY_PIPE="$2"
 DINIT_DIR="$3"
 DINIT_CONF="$4/dinit.conf"
 
-if [ -z "$DINIT_READY_FD" -o -z "$DINIT_DIR" -o ! -d "$DINIT_DIR" ]; then
+if [ ! -p "$DINIT_READY_PIPE" -o ! -d "$DINIT_DIR" ]; then
     echo "dinit: invalid input argument(s)" >&2
     exit 69
 fi
@@ -106,4 +106,4 @@ type = internal
 waits-for.d = ${system_boot_dir}
 EOF
 
-exec dinit --user --ready-fd "$DINIT_READY_FD" --services-dir "$DINIT_DIR" "$@"
+exec dinit --user --ready-fd 3 --services-dir "$DINIT_DIR" "$@" 3>"$DINIT_READY_PIPE"

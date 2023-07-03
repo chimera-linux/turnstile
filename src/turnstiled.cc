@@ -75,6 +75,8 @@ session::session() {
 
 void session::remove_sdir() {
     unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
+    /* just in case, we know this is a named pipe */
+    unlinkat(this->dirfd, "ready", 0);
     dir_clear_contents(this->dirfd);
     this->dirfd = -1;
 }
@@ -116,7 +118,6 @@ static int sigpipe[2] = {-1, -1};
 
 /* start the service manager instance for a session */
 static bool srv_start(session &sess) {
-    int dpipe[2];
     /* mark as waiting */
     sess.srv_wait = true;
     /* make rundir if needed, we don't want to create that and session dir
@@ -152,11 +153,25 @@ static bool srv_start(session &sess) {
             sess.remove_sdir();
             return false;
         }
-    }
-    /* here we'll receive the initial readiness string from the backend */
-    if (pipe2(dpipe, O_NONBLOCK) < 0) {
-        print_err("srv: pipe2 failed (%s)", strerror(errno));
-        return false;
+        print_dbg("srv: create readiness pipe");
+        unlinkat(sess.dirfd, "ready", 0);
+        if (mkfifoat(sess.dirfd, "ready", 0700) < 0) {
+            print_err("srv: failed to make ready pipe (%s)", strerror(errno));
+            return false;
+        }
+        /* ensure it's owned by user too, and open in nonblocking mode */
+        if (fchownat(
+            sess.dirfd, "ready", sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
+        ) || ((sess.userpipe = openat(
+            sess.dirfd, "ready", O_NONBLOCK | O_RDONLY
+        )) < 0)) {
+            print_err(
+                "srv: failed to set up ready pipe (%s)", strerror(errno)
+            );
+            unlinkat(sess.dirfd, "ready", 0);
+            sess.remove_sdir();
+            return false;
+        }
     }
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("srv: timer set");
@@ -181,22 +196,25 @@ static bool srv_start(session &sess) {
         sigaction(SIGTERM, &sa, nullptr);
         sigaction(SIGINT, &sa, nullptr);
         /* close some descriptors, these can be reused */
+        close(sess.userpipe);
         close(userv_dirfd);
-        close(dpipe[0]);
         close(sigpipe[0]);
         close(sigpipe[1]);
         /* and run the session */
-        srv_child(sess, cdata->backend.data(), dpipe[1], cdata->disable);
+        srv_child(sess, cdata->backend.data(), cdata->disable);
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));
         return false;
     }
     /* close the write end on our side */
-    close(dpipe[1]);
     sess.srv_pending = false;
     sess.srv_pid = pid;
-    sess.userpipe = dpipe[0];
+    if (sess.userpipe < 0) {
+        /* disabled */
+        return srv_boot(sess, nullptr);
+    }
+    /* otherwise queue the pipe */
     sess.pipe_queued = true;
     return true;
 }
@@ -728,6 +746,7 @@ static bool fd_handle_pipe(std::size_t i) {
         /* this should never happen */
         return false;
     }
+    bool done = false;
     if (fds[i].revents & POLLIN) {
         /* read the string from the pipe */
         for (;;) {
@@ -735,10 +754,16 @@ static bool fd_handle_pipe(std::size_t i) {
             if (read(fds[i].fd, &c, 1) != 1) {
                 break;
             }
+            if (c == '\0') {
+                /* done receiving */
+                done = true;
+                break;
+            }
             sess->srvstr.push_back(c);
         }
     }
-    if (fds[i].revents & POLLHUP) {
+    if (done || (fds[i].revents & POLLHUP)) {
+        print_dbg("pipe: close");
         /* kill the pipe, we don't need it anymore */
         close(sess->userpipe);
         sess->userpipe = -1;
@@ -747,15 +772,11 @@ static bool fd_handle_pipe(std::size_t i) {
         fds[i].fd = -1;
         fds[i].revents = 0;
         --npipes;
-        /* but error early if needed */
-        if (sess->srvstr.empty()) {
-            print_err("read failed (%s)", strerror(errno));
-            return true;
-        }
+        /* unlink the pipe */
+        unlinkat(sess->dirfd, "ready", 0);
+        print_dbg("pipe: gone");
         /* wait for the boot service to come up */
-        if (!srv_boot(
-            *sess, cdata->disable ? nullptr : cdata->backend.data()
-        )) {
+        if (!srv_boot(*sess, cdata->backend.data())) {
             /* this is an unrecoverable condition */
             return false;
         }

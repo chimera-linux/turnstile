@@ -187,7 +187,7 @@ bool dir_clear_contents(int dfd) {
         }
 
         print_dbg("dir_clear: clear %s at %d", dent->d_name, dfd);
-        int efd = openat(dfd, dent->d_name, O_RDONLY | O_NOFOLLOW);
+        int efd = openat(dfd, dent->d_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
         int ufl = 0;
 
         if (efd < 0) {

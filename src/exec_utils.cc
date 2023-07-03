@@ -150,7 +150,7 @@ static void sig_handler(int sign) {
     write(sigpipe[1], &sign, sizeof(sign));
 }
 
-static void fork_and_wait(pam_handle_t *pamh, int dpipe) {
+static void fork_and_wait(pam_handle_t *pamh) {
     int pst, status;
     struct pollfd pfd;
     struct sigaction sa{};
@@ -186,8 +186,6 @@ static void fork_and_wait(pam_handle_t *pamh, int dpipe) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGCHLD, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
-    /* make sure we don't block this pipe */
-    close(dpipe);
     /* our own little event loop */
     for (;;) {
         auto pret = poll(&pfd, 1, -1);
@@ -240,13 +238,7 @@ fail:
 }
 
 /* dummy "service manager" child process with none backend */
-static void srv_dummy(int pipew) {
-    /* we're always ready, the dummy process just sleeps forever */
-    if (write(pipew, "poke", 5) != 5) {
-        perror("dummy: failed to poke the pipe");
-        return;
-    }
-    close(pipew);
+static void srv_dummy() {
     /* block all signals except the ones we need to terminate */
     sigset_t mask;
     sigfillset(&mask);
@@ -259,7 +251,7 @@ static void srv_dummy(int pipew) {
     exit(0);
 }
 
-void srv_child(session &sess, char const *backend, int dpipe, bool dummy) {
+void srv_child(session &sess, char const *backend, bool dummy) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* create a new session */
@@ -276,10 +268,10 @@ void srv_child(session &sess, char const *backend, int dpipe, bool dummy) {
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
-    fork_and_wait(pamh, dpipe);
+    fork_and_wait(pamh);
     /* dummy service manager if requested */
     if (dummy) {
-        srv_dummy(dpipe);
+        srv_dummy();
         return;
     }
     /* drop privs */
@@ -329,12 +321,8 @@ void srv_child(session &sess, char const *backend, int dpipe, bool dummy) {
     add_str(LIBEXEC_PATH, "/", backend);
     /* arg1: action */
     add_str("run");
-    /* arg1: ready_fd */
-    {
-        char pipestr[32];
-        std::snprintf(pipestr, sizeof(pipestr), "%d", dpipe);
-        add_str(pipestr);
-    }
+    /* arg1: ready pipe */
+    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/ready");
     /* arg2: srvdir */
     add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
     /* arg3: confdir */
