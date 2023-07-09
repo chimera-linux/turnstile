@@ -1,9 +1,9 @@
 #!/bin/sh
 #
 # This is the turnstile dinit backend. It accepts the action as its first
-# argument, which is either "ready" or "run". In case of "run", it's invoked
-# directly through /bin/sh as if it was a login shell, and therefore it has
-# acccess to shell profile, and the shebang is functionally useless but
+# argument, which is either "ready", "run", or "stop". In case of "run", it's
+# invoked directly through /bin/sh as if it was a login shell, and therefore
+# it has acccess to shell profile, and the shebang is functionally useless but
 # should be preserved as a convention. For "ready", it's a regular shell.
 #
 # It also serves as an example of how to implement such backend.
@@ -23,6 +23,11 @@
 # confdir:  the path where turnstile's configuration data reside, used
 #           to source the configuration file
 #
+# Arguments for "stop":
+#
+# pid:      the PID of the service manager to stop (gracefully); it should
+#           terminate the services it's running and then stop itself
+#
 # How the script manages its configuration and so on is up to the script.
 #
 # Note that the script *must* exec the service manager directly, i.e. the
@@ -41,6 +46,9 @@ case "$1" in
             exit 69
         fi
         exec dinitctl --socket-path "$2" start boot
+        ;;
+    stop)
+        exec kill -s TERM "$2"
         ;;
     *)
         exit 32

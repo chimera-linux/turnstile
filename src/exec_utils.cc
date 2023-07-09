@@ -22,8 +22,11 @@
 #  define PAM_CONV_FUNC openpam_ttyconv
 #endif
 
-bool srv_boot(session &sess, char const *backend) {
-    print_dbg("srv: startup wait");
+static bool exec_script(
+    session &sess, char const *backend,
+    char const *arg, char const *data, pid_t &outpid
+) {
+    print_dbg("srv: startup (%s)", arg);
     auto pid = fork();
     if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));
@@ -32,7 +35,7 @@ bool srv_boot(session &sess, char const *backend) {
     }
     if (pid != 0) {
         /* parent process */
-        sess.start_pid = pid;
+        outpid = pid;
         return true;
     }
     if (!backend) {
@@ -59,9 +62,15 @@ bool srv_boot(session &sess, char const *backend) {
     if (rsl) {
         arg0 = rsl + 1;
     }
-    execl(_PATH_BSHELL, arg0, buf, "ready", sess.srvstr.data(), nullptr);
+    execl(_PATH_BSHELL, arg0, buf, arg, data, nullptr);
     exit(1);
     return true;
+}
+
+bool srv_boot(session &sess, char const *backend) {
+    return exec_script(
+        sess, backend, "ready", sess.srvstr.data(), sess.start_pid
+    );
 }
 
 static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
@@ -150,7 +159,9 @@ static void sig_handler(int sign) {
     write(sigpipe[1], &sign, sizeof(sign));
 }
 
-static void fork_and_wait(pam_handle_t *pamh) {
+static void fork_and_wait(
+    pam_handle_t *pamh, session &sess, char const *backend, bool dummy
+) {
     int pst, status;
     struct pollfd pfd;
     struct sigaction sa{};
@@ -202,9 +213,23 @@ static void fork_and_wait(pam_handle_t *pamh) {
         int sign;
         if (read(pfd.fd, &sign, sizeof(sign)) != sizeof(sign)) {
             perror("srv: signal read failed");
+            goto fail;
         }
         if (sign == SIGTERM) {
-            kill(p, (term_count++ > 1) ? SIGKILL : SIGTERM);
+            char buf[32];
+            pid_t outp;
+            if ((term_count++ > 1) || dummy) {
+                /* hard kill */
+                kill(p, SIGKILL);
+                continue;
+            }
+            std::snprintf(buf, sizeof(buf), "%zu", size_t(p));
+            /* otherwise run the stop part */
+            if (!exec_script(sess, backend, "stop", buf, outp)) {
+                /* failed? */
+                perror("srv: stop exec failed, fall back to TERM");
+                kill(p, SIGTERM);
+            }
             continue;
         }
         /* SIGCHLD */
@@ -268,7 +293,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
-    fork_and_wait(pamh);
+    fork_and_wait(pamh, sess, backend, dummy);
     /* dummy service manager if requested */
     if (dummy) {
         srv_dummy();
