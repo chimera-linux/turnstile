@@ -26,10 +26,8 @@ static bool exec_script(
     session &sess, char const *backend,
     char const *arg, char const *data, pid_t &outpid
 ) {
-    print_dbg("srv: startup (%s)", arg);
     auto pid = fork();
     if (pid < 0) {
-        print_err("srv: fork failed (%s)", strerror(errno));
         /* unrecoverable */
         return false;
     }
@@ -46,11 +44,11 @@ static bool exec_script(
     /* child process */
     if (getuid() == 0) {
         if (setgid(sess.gid) != 0) {
-            print_err("srv: failed to set gid (%s)", strerror(errno));
+            perror("srv: failed to set gid");
             exit(1);
         }
         if (setuid(sess.uid) != 0) {
-            print_err("srv: failed to set uid (%s)", strerror(errno));
+            perror("srv: failed to set uid");
             exit(1);
         }
     }
@@ -68,9 +66,14 @@ static bool exec_script(
 }
 
 bool srv_boot(session &sess, char const *backend) {
-    return exec_script(
+    print_dbg("srv: startup (ready)");
+    if (!exec_script(
         sess, backend, "ready", sess.srvstr.data(), sess.start_pid
-    );
+    )) {
+        print_err("srv: fork failed (%s)", strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
