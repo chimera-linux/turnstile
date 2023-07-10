@@ -329,6 +329,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* change directory to home, fall back to / or error */
     if ((chdir(sess.homedir.data()) < 0) || (chdir("/") < 0)) {
         perror("srv: failed to change directory");
+        return;
     }
     /* set up service manager tempdir after we drop privileges */
     char tdirn[38];
