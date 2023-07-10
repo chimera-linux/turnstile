@@ -155,7 +155,6 @@ static void dpam_finalize(pam_handle_t *pamh) {
     pam_end(pamh, PAM_SUCCESS | PAM_DATA_SILENT);
 }
 
-static int term_count = 0;
 static int sigpipe[2] = {-1, -1};
 
 static void sig_handler(int sign) {
@@ -166,6 +165,7 @@ static void fork_and_wait(
     pam_handle_t *pamh, session &sess, char const *backend, bool dummy
 ) {
     int pst, status;
+    int term_count = 0;
     struct pollfd pfd;
     struct sigaction sa{};
     sigset_t mask;
