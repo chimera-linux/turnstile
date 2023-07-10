@@ -221,6 +221,7 @@ static void fork_and_wait(
         if (sign == SIGTERM) {
             char buf[32];
             pid_t outp;
+            int st;
             if ((term_count++ > 1) || dummy) {
                 /* hard kill */
                 kill(p, SIGKILL);
@@ -233,6 +234,17 @@ static void fork_and_wait(
                 perror("srv: stop exec failed, fall back to TERM");
                 kill(p, SIGTERM);
             }
+            /* wait for it to end */
+            do {
+                pid_t w = waitpid(outp, &st, 0);
+                if (w < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    perror("srv: stop exec wait failed");
+                    break;
+                }
+            } while (!WIFEXITED(st) && !WIFSIGNALED(st));
             continue;
         }
         /* SIGCHLD */
