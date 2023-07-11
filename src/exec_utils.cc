@@ -65,10 +65,10 @@ static bool exec_script(
     return true;
 }
 
-bool srv_boot(session &sess, char const *backend) {
+bool srv_boot(login &lgn, char const *backend) {
     print_dbg("srv: startup (ready)");
     if (!exec_script(
-        backend, "ready", sess.srvstr.data(), sess.uid, sess.gid, sess.start_pid
+        backend, "ready", lgn.srvstr.data(), lgn.uid, lgn.gid, lgn.start_pid
     )) {
         print_err("srv: fork failed (%s)", strerror(errno));
         return false;
@@ -294,7 +294,7 @@ static void srv_dummy() {
     exit(0);
 }
 
-void srv_child(session &sess, char const *backend, bool dummy) {
+void srv_child(login &lgn, char const *backend, bool dummy) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* create a new session */
@@ -303,7 +303,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     }
     /* begin pam session setup */
     if (is_root && !dummy) {
-        pamh = dpam_begin(sess.username.data(), sess.gid);
+        pamh = dpam_begin(lgn.username.data(), lgn.gid);
         if (!dpam_open(pamh)) {
             return;
         }
@@ -311,7 +311,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
-    fork_and_wait(pamh, backend, sess.uid, sess.gid, dummy);
+    fork_and_wait(pamh, backend, lgn.uid, lgn.gid, dummy);
     /* dummy service manager if requested */
     if (dummy) {
         srv_dummy();
@@ -320,17 +320,17 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* drop privs */
     if (is_root) {
         /* change identity */
-        if (setgid(sess.gid) != 0) {
+        if (setgid(lgn.gid) != 0) {
             perror("srv: failed to set gid");
             return;
         }
-        if (setuid(sess.uid) != 0) {
+        if (setuid(lgn.uid) != 0) {
             perror("srv: failed to set uid");
             return;
         }
     }
     /* change directory to home, fall back to / or error */
-    if ((chdir(sess.homedir.data()) < 0) || (chdir("/") < 0)) {
+    if ((chdir(lgn.homedir.data()) < 0) || (chdir("/") < 0)) {
         perror("srv: failed to change directory");
         return;
     }
@@ -340,7 +340,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
         tdirn, sizeof(tdirn), "srv.%lu",
         static_cast<unsigned long>(getpid())
     );
-    int tdirfd = dir_make_at(sess.dirfd, tdirn, 0700);
+    int tdirfd = dir_make_at(lgn.dirfd, tdirn, 0700);
     if (tdirfd < 0) {
         perror("srv: failed to create state dir");
         return;
@@ -348,8 +348,8 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     close(tdirfd);
     /* stringify the uid/gid */
     char uidbuf[32], gidbuf[32];
-    std::snprintf(uidbuf, sizeof(uidbuf), "%u", sess.uid);
-    std::snprintf(gidbuf, sizeof(gidbuf), "%u", sess.gid);
+    std::snprintf(uidbuf, sizeof(uidbuf), "%u", lgn.uid);
+    std::snprintf(gidbuf, sizeof(gidbuf), "%u", lgn.gid);
     /* build up env and args list */
     std::vector<char> execs{};
     std::size_t argc = 0, nexec = 0;
@@ -409,16 +409,16 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     }
     /* add our environment defaults if not already set */
     if (!have_env_shell) {
-        add_str("SHELL=", sess.shell.data());
+        add_str("SHELL=", lgn.shell.data());
     }
     if (!have_env_user) {
-        add_str("USER=", sess.username.data());
+        add_str("USER=", lgn.username.data());
     }
     if (!have_env_logname) {
-        add_str("LOGNAME=", sess.username.data());
+        add_str("LOGNAME=", lgn.username.data());
     }
     if (!have_env_home) {
-        add_str("HOME=", sess.homedir.data());
+        add_str("HOME=", lgn.homedir.data());
     }
     if (!have_env_uid) {
         add_str("UID=", uidbuf);
@@ -429,8 +429,8 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     if (!have_env_path) {
         add_str("PATH=" _PATH_DEFPATH);
     }
-    if (sess.rundir[0] && !have_env_rundir) {
-        add_str("XDG_RUNTIME_DIR=", sess.rundir);
+    if (lgn.rundir[0] && !have_env_rundir) {
+        add_str("XDG_RUNTIME_DIR=", lgn.rundir);
     }
     /* make up env and arg arrays */
     std::vector<char const *> argp{};

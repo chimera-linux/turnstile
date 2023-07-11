@@ -1,4 +1,4 @@
-/* turnstiled: handle incoming session requests and start (or
+/* turnstiled: handle incoming login requests and start (or
  *             stop) service manager instances as necessary
  *
  * the daemon should never exit under "normal" circumstances
@@ -66,14 +66,14 @@ cfg_data *cdata = nullptr;
 /* the file descriptor for the base directory */
 static int userv_dirfd = -1;
 
-session::session() {
+login::login() {
     timer_sev.sigev_notify = SIGEV_SIGNAL;
     timer_sev.sigev_signo = SIGALRM;
     timer_sev.sigev_value.sival_ptr = this;
     srvstr.reserve(256);
 }
 
-void session::remove_sdir() {
+void login::remove_sdir() {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%u", this->uid);
     unlinkat(userv_dirfd, buf, AT_REMOVEDIR);
@@ -83,7 +83,7 @@ void session::remove_sdir() {
     this->dirfd = -1;
 }
 
-bool session::arm_timer(std::time_t timeout) {
+bool login::arm_timer(std::time_t timeout) {
     if (timer_create(CLOCK_MONOTONIC, &timer_sev, &timer) < 0) {
         print_err("timer: timer_create failed (%s)", strerror(errno));
         return false;
@@ -99,7 +99,7 @@ bool session::arm_timer(std::time_t timeout) {
     return true;
 }
 
-void session::disarm_timer() {
+void login::disarm_timer() {
     if (!timer_armed) {
         return;
     }
@@ -107,7 +107,7 @@ void session::disarm_timer() {
     timer_armed = false;
 }
 
-static std::vector<session> sessions;
+static std::vector<login> logins;
 
 /* file descriptors for poll */
 static std::vector<pollfd> fds;
@@ -118,70 +118,70 @@ static int ctl_sock;
 /* signal self-pipe */
 static int sigpipe[2] = {-1, -1};
 
-/* start the service manager instance for a session */
-static bool srv_start(session &sess) {
+/* start the service manager instance for a login */
+static bool srv_start(login &lgn) {
     /* prepare some strings */
     char uidbuf[32];
-    std::snprintf(uidbuf, sizeof(uidbuf), "%u", sess.uid);
+    std::snprintf(uidbuf, sizeof(uidbuf), "%u", lgn.uid);
     /* mark as waiting */
-    sess.srv_wait = true;
-    /* make rundir if needed, we don't want to create that and session dir
+    lgn.srv_wait = true;
+    /* make rundir if needed, we don't want to create that and login dir
      * any earlier than here as here we are sure the previous instance has
-     * definitely terminated and stuff like session dirfd is actually clear
+     * definitely terminated and stuff like login dirfd is actually clear
      */
     if (cdata->manage_rdir) {
-        print_dbg("srv: setup rundir for %u", sess.uid);
-        if (!rundir_make(sess.rundir, sess.uid, sess.gid)) {
+        print_dbg("srv: setup rundir for %u", lgn.uid);
+        if (!rundir_make(lgn.rundir, lgn.uid, lgn.gid)) {
             return false;
         }
     }
-    /* set up session dir */
+    /* set up login dir */
     if (!cdata->disable) {
-        print_dbg("srv: create session dir for %u", sess.uid);
+        print_dbg("srv: create login dir for %u", lgn.uid);
         /* make the directory itself */
-        sess.dirfd = dir_make_at(userv_dirfd, uidbuf, 0700);
-        if (sess.dirfd < 0) {
+        lgn.dirfd = dir_make_at(userv_dirfd, uidbuf, 0700);
+        if (lgn.dirfd < 0) {
             print_err(
-                "srv: failed to make session dir for %u (%s)",
-                sess.uid, strerror(errno)
+                "srv: failed to make login dir for %u (%s)",
+                lgn.uid, strerror(errno)
             );
             return false;
         }
         /* ensure it's owned by the user */
         if (fchownat(
-            userv_dirfd, uidbuf, sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
-        ) || fcntl(sess.dirfd, F_SETFD, FD_CLOEXEC)) {
+            userv_dirfd, uidbuf, lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
+        ) || fcntl(lgn.dirfd, F_SETFD, FD_CLOEXEC)) {
             print_err(
-                "srv: session dir setup failed for %u (%s)",
-                sess.uid, strerror(errno)
+                "srv: login dir setup failed for %u (%s)",
+                lgn.uid, strerror(errno)
             );
-            sess.remove_sdir();
+            lgn.remove_sdir();
             return false;
         }
         print_dbg("srv: create readiness pipe");
-        unlinkat(sess.dirfd, "ready", 0);
-        if (mkfifoat(sess.dirfd, "ready", 0700) < 0) {
+        unlinkat(lgn.dirfd, "ready", 0);
+        if (mkfifoat(lgn.dirfd, "ready", 0700) < 0) {
             print_err("srv: failed to make ready pipe (%s)", strerror(errno));
             return false;
         }
         /* ensure it's owned by user too, and open in nonblocking mode */
         if (fchownat(
-            sess.dirfd, "ready", sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
-        ) || ((sess.userpipe = openat(
-            sess.dirfd, "ready", O_NONBLOCK | O_RDONLY
+            lgn.dirfd, "ready", lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
+        ) || ((lgn.userpipe = openat(
+            lgn.dirfd, "ready", O_NONBLOCK | O_RDONLY
         )) < 0)) {
             print_err(
                 "srv: failed to set up ready pipe (%s)", strerror(errno)
             );
-            unlinkat(sess.dirfd, "ready", 0);
-            sess.remove_sdir();
+            unlinkat(lgn.dirfd, "ready", 0);
+            lgn.remove_sdir();
             return false;
         }
     }
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("srv: timer set");
     if (cdata->login_timeout > 0) {
-        if (!sess.arm_timer(cdata->login_timeout)) {
+        if (!lgn.arm_timer(cdata->login_timeout)) {
             return false;
         }
     } else {
@@ -201,38 +201,38 @@ static bool srv_start(session &sess) {
         sigaction(SIGTERM, &sa, nullptr);
         sigaction(SIGINT, &sa, nullptr);
         /* close some descriptors, these can be reused */
-        close(sess.userpipe);
+        close(lgn.userpipe);
         close(userv_dirfd);
         close(sigpipe[0]);
         close(sigpipe[1]);
-        /* and run the session */
-        srv_child(sess, cdata->backend.data(), cdata->disable);
+        /* and run the login */
+        srv_child(lgn, cdata->backend.data(), cdata->disable);
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));
         return false;
     }
     /* close the write end on our side */
-    sess.srv_pending = false;
-    sess.srv_pid = pid;
-    if (sess.userpipe < 0) {
+    lgn.srv_pending = false;
+    lgn.srv_pid = pid;
+    if (lgn.userpipe < 0) {
         /* disabled */
-        return srv_boot(sess, nullptr);
+        return srv_boot(lgn, nullptr);
     }
     /* otherwise queue the pipe */
-    sess.pipe_queued = true;
+    lgn.pipe_queued = true;
     return true;
 }
 
-static session *get_session(int fd) {
-    for (auto &sess: sessions) {
-        for (auto c: sess.conns) {
+static login *get_login(int fd) {
+    for (auto &lgn: logins) {
+        for (auto c: lgn.conns) {
             if (fd == c) {
-                return &sess;
+                return &lgn;
             }
         }
     }
-    print_dbg("msg: no session for %d", fd);
+    print_dbg("msg: no login for %d", fd);
     return nullptr;
 }
 
@@ -294,7 +294,7 @@ static bool get_peer_euid(int fd, unsigned int &euid) {
     return false;
 }
 
-static session *handle_session_new(int fd, unsigned int uid) {
+static login *handle_login_new(int fd, unsigned int uid) {
     /* check for credential mismatch */
     unsigned int puid = UINT_MAX;
     if (!get_peer_euid(fd, puid)) {
@@ -305,12 +305,12 @@ static session *handle_session_new(int fd, unsigned int uid) {
         print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
         return nullptr;
     }
-    /* acknowledge the session */
+    /* acknowledge the login */
     print_dbg("msg: welcome %u", uid);
-    session *sess = nullptr;
-    for (auto &sessr: sessions) {
-        if (sessr.uid == uid) {
-            sess = &sessr;
+    login *lgn = nullptr;
+    for (auto &lgnr: logins) {
+        if (lgnr.uid == uid) {
+            lgn = &lgnr;
             break;
         }
     }
@@ -326,33 +326,33 @@ static session *handle_session_new(int fd, unsigned int uid) {
         );
         return nullptr;
     }
-    if (!sess) {
-        sess = &sessions.emplace_back();
+    if (!lgn) {
+        lgn = &logins.emplace_back();
     }
-    for (auto c: sess->conns) {
+    for (auto c: lgn->conns) {
         if (c == fd) {
-            print_dbg("msg: already have session %u", pwd->pw_uid);
+            print_dbg("msg: already have login %u", pwd->pw_uid);
             return nullptr;
         }
     }
-    std::memset(sess->rundir, 0, sizeof(sess->rundir));
+    std::memset(lgn->rundir, 0, sizeof(lgn->rundir));
     if (!cfg_expand_rundir(
-        sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
+        lgn->rundir, sizeof(lgn->rundir), cdata->rdir_path.data(),
         pwd->pw_uid, pwd->pw_gid
     )) {
         print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
         return nullptr;
     }
-    print_dbg("msg: setup session %u", pwd->pw_uid);
-    sess->conns.push_back(fd);
-    sess->uid = pwd->pw_uid;
-    sess->gid = pwd->pw_gid;
-    sess->username = pwd->pw_name;
-    sess->homedir = pwd->pw_dir;
-    sess->shell = pwd->pw_shell;
-    sess->manage_rdir = cdata->manage_rdir && sess->rundir[0];
+    print_dbg("msg: setup login %u", pwd->pw_uid);
+    lgn->conns.push_back(fd);
+    lgn->uid = pwd->pw_uid;
+    lgn->gid = pwd->pw_gid;
+    lgn->username = pwd->pw_name;
+    lgn->homedir = pwd->pw_dir;
+    lgn->shell = pwd->pw_shell;
+    lgn->manage_rdir = cdata->manage_rdir && lgn->rundir[0];
     /* reply */
-    return sess;
+    return lgn;
 }
 
 static bool handle_read(int fd) {
@@ -372,25 +372,25 @@ static bool handle_read(int fd) {
     switch (msg & MSG_TYPE_MASK) {
         case MSG_START: {
             /* new login, register it */
-            auto *sess = handle_session_new(fd, msg >> MSG_TYPE_BITS);
-            if (!sess) {
+            auto *lgn = handle_login_new(fd, msg >> MSG_TYPE_BITS);
+            if (!lgn) {
                 return msg_send(fd, MSG_ERR);
             }
-            if (!sess->srv_wait) {
+            if (!lgn->srv_wait) {
                 /* already started, reply with ok */
                 print_dbg("msg: done");
                 return msg_send(
                     fd, MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE)
                 );
             } else {
-                if (sess->srv_pid == -1) {
-                    if (sess->term_pid != -1) {
+                if (lgn->srv_pid == -1) {
+                    if (lgn->term_pid != -1) {
                         /* still waiting for old service manager to die */
                         print_dbg("msg: still waiting for old srv term");
-                        sess->srv_pending = true;
+                        lgn->srv_pending = true;
                     } else {
                         print_dbg("msg: start service manager");
-                        if (!srv_start(*sess)) {
+                        if (!srv_start(*lgn)) {
                             return false;
                         }
                     }
@@ -402,16 +402,16 @@ static bool handle_read(int fd) {
             break;
         }
         case MSG_REQ_RLEN: {
-            auto *sess = get_session(fd);
-            if (!sess) {
+            auto *lgn = get_login(fd);
+            if (!lgn) {
                 return msg_send(fd, MSG_ERR);
             }
             /* send rundir length */
-            if (!sess->rundir[0]) {
+            if (!lgn->rundir[0]) {
                 /* send zero length */
                 return msg_send(fd, MSG_DATA);
             }
-            auto rlen = std::strlen(sess->rundir);
+            auto rlen = std::strlen(lgn->rundir);
             if (cdata->manage_rdir) {
                 return msg_send(fd, MSG_ENCODE(rlen + DIRLEN_MAX));
             } else {
@@ -419,8 +419,8 @@ static bool handle_read(int fd) {
             }
         }
         case MSG_REQ_RDATA: {
-            auto *sess = get_session(fd);
-            if (!sess) {
+            auto *lgn = get_login(fd);
+            if (!lgn) {
                 return msg_send(fd, MSG_ERR);
             }
             msg >>= MSG_TYPE_BITS;
@@ -428,11 +428,11 @@ static bool handle_read(int fd) {
                 return msg_send(fd, MSG_ERR);
             }
             unsigned int v = 0;
-            auto rlen = std::strlen(sess->rundir);
+            auto rlen = std::strlen(lgn->rundir);
             if (msg > rlen) {
                 return msg_send(fd, MSG_ERR);
             }
-            auto *rstr = sess->rundir;
+            auto *rstr = lgn->rundir;
             std::memcpy(&v, rstr + rlen - msg, MSG_SBYTES(msg));
             return msg_send(fd, MSG_ENCODE(le32toh(v)));
         }
@@ -462,7 +462,7 @@ static void timer_handler(int sign, siginfo_t *si, void *) {
     write(sigpipe[1], &d, sizeof(d));
 }
 
-static bool check_linger(session const &sess) {
+static bool check_linger(login const &lgn) {
     if (cdata->linger_never) {
         return false;
     }
@@ -475,41 +475,38 @@ static bool check_linger(session const &sess) {
     }
     struct stat lbuf;
     bool ret = (!fstatat(
-        dfd, sess.username.data(), &lbuf, AT_SYMLINK_NOFOLLOW
+        dfd, lgn.username.data(), &lbuf, AT_SYMLINK_NOFOLLOW
     ) && S_ISREG(lbuf.st_mode));
     close(dfd);
     return ret;
 }
 
-/* terminate given conn, but only if within session */
-static bool conn_term_sess(session &sess, int conn) {
-    for (auto cit = sess.conns.begin(); cit != sess.conns.end(); ++cit) {
+/* terminate given conn, but only if within login */
+static bool conn_term_login(login &lgn, int conn) {
+    for (auto cit = lgn.conns.begin(); cit != lgn.conns.end(); ++cit) {
         if (*cit != conn) {
             continue;
         }
-        print_dbg(
-            "conn: close %d for session %u",
-            conn, sess.uid
-        );
-        sess.conns.erase(cit);
-        /* empty now; shut down session */
-        if (sess.conns.empty() && !check_linger(sess)) {
+        print_dbg("conn: close %d for login %u", conn, lgn.uid);
+        lgn.conns.erase(cit);
+        /* empty now; shut down login */
+        if (lgn.conns.empty() && !check_linger(lgn)) {
             print_dbg("srv: stop");
-            if (sess.srv_pid != -1) {
+            if (lgn.srv_pid != -1) {
                 print_dbg("srv: term");
-                kill(sess.srv_pid, SIGTERM);
-                sess.term_pid = sess.srv_pid;
+                kill(lgn.srv_pid, SIGTERM);
+                lgn.term_pid = lgn.srv_pid;
                 /* just in case */
-                sess.arm_timer(kill_timeout);
+                lgn.arm_timer(kill_timeout);
             } else {
                 /* if no service manager, drop the dir early; otherwise
                  * wait because we need to remove the boot service first
                  */
-                sess.remove_sdir();
+                lgn.remove_sdir();
             }
-            sess.srv_pid = -1;
-            sess.start_pid = -1;
-            sess.srv_wait = true;
+            lgn.srv_pid = -1;
+            lgn.start_pid = -1;
+            lgn.srv_wait = true;
         }
         close(conn);
         return true;
@@ -518,8 +515,8 @@ static bool conn_term_sess(session &sess, int conn) {
 }
 
 static void conn_term(int conn) {
-    for (auto &sess: sessions) {
-        if (conn_term_sess(sess, conn)) {
+    for (auto &lgn: logins) {
+        if (conn_term_login(lgn, conn)) {
             return;
         }
     }
@@ -578,17 +575,17 @@ fail:
     return false;
 }
 
-static bool drop_session(session &sess) {
-    /* terminate all connections belonging to this session */
-    print_dbg("turnstiled: drop session %u", sess.uid);
+static bool drop_login(login &lgn) {
+    /* terminate all connections belonging to this login */
+    print_dbg("turnstiled: drop login %u", lgn.uid);
     for (std::size_t j = 2; j < fds.size(); ++j) {
-        if (conn_term_sess(sess, fds[j].fd)) {
+        if (conn_term_login(lgn, fds[j].fd)) {
             fds[j].fd = -1;
             fds[j].revents = 0;
         }
     }
     /* this should never happen unless we have a bug */
-    if (!sess.conns.empty()) {
+    if (!lgn.conns.empty()) {
         print_err("turnstiled: conns not empty, it should be");
         /* unrecoverable */
         return false;
@@ -601,9 +598,9 @@ static bool sig_handle_term() {
     bool succ = true;
     /* close the control socket */
     close(ctl_sock);
-    /* drop sessions */
-    for (auto &sess: sessions) {
-        if (!drop_session(sess)) {
+    /* drop logins */
+    for (auto &lgn: logins) {
+        if (!drop_login(lgn)) {
             succ = false;
         }
     }
@@ -614,34 +611,34 @@ static bool sig_handle_term() {
 
 static bool sig_handle_alrm(void *data) {
     print_dbg("turnstiled: sigalrm");
-    auto &sess = *static_cast<session *>(data);
+    auto &lgn = *static_cast<login *>(data);
     /* disarm the timer first, before it has a chance to fire */
     print_dbg("turnstiled: drop timer");
-    if (!sess.timer_armed) {
+    if (!lgn.timer_armed) {
         /* this should never happen, unrecoverable */
         print_err("timer: handling alrm but timer not armed");
         return false;
     }
-    sess.disarm_timer();
-    if (sess.term_pid != -1) {
-        if (sess.kill_tried) {
+    lgn.disarm_timer();
+    if (lgn.term_pid != -1) {
+        if (lgn.kill_tried) {
             print_err(
                 "turnstiled: service manager process %ld refused to die",
-                static_cast<long>(sess.term_pid)
+                static_cast<long>(lgn.term_pid)
             );
             return false;
         }
         /* waiting for service manager to die and it did not die, try again
          * this will propagate as SIGKILL in the double-forked process
          */
-        kill(sess.term_pid, SIGTERM);
-        sess.kill_tried = true;
+        kill(lgn.term_pid, SIGTERM);
+        lgn.kill_tried = true;
         /* re-arm the timer, if that fails again, we give up */
-        sess.arm_timer(kill_timeout);
+        lgn.arm_timer(kill_timeout);
         return true;
     }
-    /* terminate all connections belonging to this session */
-    return drop_session(sess);
+    /* terminate all connections belonging to this login */
+    return drop_login(lgn);
 }
 
 /* this is called upon receiving a SIGCHLD
@@ -654,7 +651,7 @@ static bool sig_handle_alrm(void *data) {
  *
  * the readiness job, which waits for the bootup to finish, and is run once
  * the service manager has opened its control socket; in those cases we notify
- * all pending connections and disarm the timeout (and mark the session ready)
+ * all pending connections and disarm the timeout (and mark the login ready)
  *
  * or the service manager instance which has stopped (due to logout typically),
  * in which case we take care of removing the generated service directory and
@@ -662,51 +659,51 @@ static bool sig_handle_alrm(void *data) {
  */
 static bool srv_reaper(pid_t pid) {
     print_dbg("srv: reap %u", (unsigned int)pid);
-    for (auto &sess: sessions) {
-        if (pid == sess.srv_pid) {
-            sess.srv_pid = -1;
-            sess.start_pid = -1; /* we don't care anymore */
-            sess.disarm_timer();
-            if (sess.srv_wait) {
+    for (auto &lgn: logins) {
+        if (pid == lgn.srv_pid) {
+            lgn.srv_pid = -1;
+            lgn.start_pid = -1; /* we don't care anymore */
+            lgn.disarm_timer();
+            if (lgn.srv_wait) {
                 /* failed without ever having signaled readiness
                  * let the login proceed but indicate an error
                  */
                 print_err("srv: died without notifying readiness");
                 /* clear rundir if needed */
-                if (sess.manage_rdir) {
-                    rundir_clear(sess.rundir);
-                    sess.manage_rdir = false;
+                if (lgn.manage_rdir) {
+                    rundir_clear(lgn.rundir);
+                    lgn.manage_rdir = false;
                 }
-                return drop_session(sess);
+                return drop_login(lgn);
             }
-            return srv_start(sess);
-        } else if (pid == sess.start_pid) {
+            return srv_start(lgn);
+        } else if (pid == lgn.start_pid) {
             /* reaping service startup jobs */
             print_dbg("srv: ready notification");
             unsigned int msg = MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE);
-            for (auto c: sess.conns) {
+            for (auto c: lgn.conns) {
                 if (send(c, &msg, sizeof(msg), 0) < 0) {
                     print_err("conn: send failed (%s)", strerror(errno));
                 }
             }
             /* disarm an associated timer */
             print_dbg("srv: disarm timer");
-            sess.disarm_timer();
-            sess.start_pid = -1;
-            sess.srv_wait = false;
-        } else if (pid == sess.term_pid) {
-            /* if there was a timer on the session, safe to drop it now */
-            sess.disarm_timer();
-            sess.remove_sdir();
+            lgn.disarm_timer();
+            lgn.start_pid = -1;
+            lgn.srv_wait = false;
+        } else if (pid == lgn.term_pid) {
+            /* if there was a timer on the login, safe to drop it now */
+            lgn.disarm_timer();
+            lgn.remove_sdir();
             /* clear rundir if needed */
-            if (sess.manage_rdir) {
-                rundir_clear(sess.rundir);
-                sess.manage_rdir = false;
+            if (lgn.manage_rdir) {
+                rundir_clear(lgn.rundir);
+                lgn.manage_rdir = false;
             }
-            sess.term_pid = -1;
-            sess.kill_tried = false;
-            if (sess.srv_pending) {
-                return srv_start(sess);
+            lgn.term_pid = -1;
+            lgn.kill_tried = false;
+            if (lgn.srv_pending) {
+                return srv_start(lgn);
             }
         }
     }
@@ -737,14 +734,14 @@ static bool fd_handle_pipe(std::size_t i) {
         return true;
     }
     /* find if this is a pipe */
-    session *sess = nullptr;
-    for (auto &sessr: sessions) {
-        if (fds[i].fd == sessr.userpipe) {
-            sess = &sessr;
+    login *lgn = nullptr;
+    for (auto &lgnr: logins) {
+        if (fds[i].fd == lgnr.userpipe) {
+            lgn = &lgnr;
             break;
         }
     }
-    if (!sess) {
+    if (!lgn) {
         /* this should never happen */
         return false;
     }
@@ -761,29 +758,29 @@ static bool fd_handle_pipe(std::size_t i) {
                 done = true;
                 break;
             }
-            sess->srvstr.push_back(c);
+            lgn->srvstr.push_back(c);
         }
     }
     if (done || (fds[i].revents & POLLHUP)) {
         print_dbg("pipe: close");
         /* kill the pipe, we don't need it anymore */
-        close(sess->userpipe);
-        sess->userpipe = -1;
+        close(lgn->userpipe);
+        lgn->userpipe = -1;
         /* just in case */
-        sess->pipe_queued = false;
+        lgn->pipe_queued = false;
         fds[i].fd = -1;
         fds[i].revents = 0;
         --npipes;
         /* unlink the pipe */
-        unlinkat(sess->dirfd, "ready", 0);
+        unlinkat(lgn->dirfd, "ready", 0);
         print_dbg("pipe: gone");
         /* wait for the boot service to come up */
-        if (!srv_boot(*sess, cdata->backend.data())) {
+        if (!srv_boot(*lgn, cdata->backend.data())) {
             /* this is an unrecoverable condition */
             return false;
         }
         /* reset the buffer for next time */
-        sess->srvstr.clear();
+        lgn->srvstr.clear();
     }
     return true;
 }
@@ -855,7 +852,7 @@ int main(int argc, char **argv) {
     }
 
     /* prealloc a bunch of space */
-    sessions.reserve(16);
+    logins.reserve(16);
     fds.reserve(64);
 
     openlog("turnstiled", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
@@ -991,8 +988,8 @@ signal_done:
         if (term) {
             /* check if there are any more live processes */
             bool die_now = true;
-            for (auto &sess: sessions) {
-                if ((sess.srv_pid >= 0) || (sess.term_pid >= 0)) {
+            for (auto &lgn: logins) {
+                if ((lgn.srv_pid >= 0) || (lgn.term_pid >= 0)) {
                     /* still waiting for something to die */
                     die_now = false;
                     break;
@@ -1030,18 +1027,18 @@ do_compact:
             }
         }
         /* queue pipes after control socket */
-        for (auto &sess: sessions) {
-            if (!sess.pipe_queued) {
+        for (auto &lgn: logins) {
+            if (!lgn.pipe_queued) {
                 continue;
             }
             pollfd pfd;
-            pfd.fd = sess.userpipe;
+            pfd.fd = lgn.userpipe;
             pfd.events = POLLIN | POLLHUP;
             pfd.revents = 0;
             /* insert in the pipe area so they are polled before conns */
             fds.insert(fds.begin() + 2, pfd);
             /* ensure it's not re-queued again */
-            sess.pipe_queued = false;
+            lgn.pipe_queued = false;
             ++npipes;
         }
     }

@@ -20,8 +20,8 @@
 #include "protocol.hh"
 
 /* represents a collection of logins for a specific user id */
-struct session {
-    /* a list of connection file descriptors for this session */
+struct login {
+    /* a list of connection file descriptors for this login */
     std::vector<int> conns{};
     /* the username */
     std::string username{};
@@ -37,7 +37,7 @@ struct session {
     pid_t start_pid = -1;
     /* the PID of the service manager process that is currently dying */
     pid_t term_pid = -1;
-    /* session timer; there can be only one per session */
+    /* login timer; there can be only one per login */
     timer_t timer{};
     sigevent timer_sev{};
     /* user and group IDs read off the first connection */
@@ -47,7 +47,7 @@ struct session {
      * command readiness
      */
     int userpipe = -1;
-    /* session directory descriptor */
+    /* login directory descriptor */
     int dirfd = -1;
     /* true unless srv_pid has completely finished starting */
     bool srv_wait = true;
@@ -64,7 +64,7 @@ struct session {
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
 
-    session();
+    login();
     void remove_sdir();
     bool arm_timer(std::time_t);
     void disarm_timer();
@@ -84,8 +84,8 @@ bool cfg_expand_rundir(
 );
 
 /* service manager utilities */
-void srv_child(session &sess, char const *backend, bool d);
-bool srv_boot(session &sess, char const *backend);
+void srv_child(login &sess, char const *backend, bool d);
+bool srv_boot(login &sess, char const *backend);
 
 struct cfg_data {
     time_t login_timeout = 60;
