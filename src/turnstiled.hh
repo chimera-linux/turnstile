@@ -54,6 +54,8 @@ struct login {
     int userpipe = -1;
     /* login directory descriptor */
     int dirfd = -1;
+    /* whether the login should be repopulated on next session */
+    bool repopulate = true;
     /* true unless srv_pid has completely finished starting */
     bool srv_wait = true;
     /* false unless waiting for term_pid to quit before starting again */

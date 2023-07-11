@@ -294,22 +294,14 @@ static bool get_peer_euid(int fd, unsigned int &euid) {
     return false;
 }
 
-static login *handle_login_new(int fd, unsigned int uid) {
-    /* check for credential mismatch */
-    unsigned int puid = UINT_MAX;
-    if (!get_peer_euid(fd, puid)) {
-        print_dbg("msg: could not get peer credentials");
-        return nullptr;
-    }
-    if ((puid != 0) && (uid != puid)) {
-        print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
-        return nullptr;
-    }
-    /* acknowledge the login */
-    print_dbg("msg: welcome %u", uid);
+static login *login_populate(unsigned int uid) {
     login *lgn = nullptr;
     for (auto &lgnr: logins) {
         if (lgnr.uid == uid) {
+            if (!lgnr.repopulate) {
+                print_dbg("msg: using existing login %u", uid);
+                return &lgnr;
+            }
             lgn = &lgnr;
             break;
         }
@@ -326,34 +318,56 @@ static login *handle_login_new(int fd, unsigned int uid) {
         );
         return nullptr;
     }
-    if (!lgn) {
+    if (lgn) {
+        print_dbg("msg: repopulate login %u", pwd->pw_uid);
+    } else {
+        print_dbg("msg: init login %u", pwd->pw_uid);
         lgn = &logins.emplace_back();
     }
-    for (auto &sess: lgn->sessions) {
-        if (sess.fd == fd) {
-            print_dbg("msg: already have login %u", pwd->pw_uid);
-            return nullptr;
-        }
-    }
-    std::memset(lgn->rundir, 0, sizeof(lgn->rundir));
-    if (!cfg_expand_rundir(
-        lgn->rundir, sizeof(lgn->rundir), cdata->rdir_path.data(),
-        pwd->pw_uid, pwd->pw_gid
-    )) {
-        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
-        return nullptr;
-    }
-    print_dbg("msg: setup login %u", pwd->pw_uid);
-    /* create a new session */
-    auto &sess = lgn->sessions.emplace_back();
-    sess.fd = fd;
-    /* fill in the rest of the info just in case */
+    /* fill in initial login details */
     lgn->uid = pwd->pw_uid;
     lgn->gid = pwd->pw_gid;
     lgn->username = pwd->pw_name;
     lgn->homedir = pwd->pw_dir;
     lgn->shell = pwd->pw_shell;
+    std::memset(lgn->rundir, 0, sizeof(lgn->rundir));
+    if (!cfg_expand_rundir(
+        lgn->rundir, sizeof(lgn->rundir), cdata->rdir_path.data(),
+        lgn->uid, lgn->gid
+    )) {
+        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
+        return nullptr;
+    }
     lgn->manage_rdir = cdata->manage_rdir && lgn->rundir[0];
+    lgn->repopulate = false;
+    return lgn;
+}
+
+static login *handle_session_new(int fd, unsigned int uid) {
+    /* check for credential mismatch */
+    unsigned int puid = UINT_MAX;
+    if (!get_peer_euid(fd, puid)) {
+        print_dbg("msg: could not get peer credentials");
+        return nullptr;
+    }
+    if ((puid != 0) && (uid != puid)) {
+        print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
+        return nullptr;
+    }
+    /* acknowledge the login */
+    print_dbg("msg: welcome %u", uid);
+    auto *lgn = login_populate(uid);
+    /* check the sessions */
+    for (auto &sess: lgn->sessions) {
+        if (sess.fd == fd) {
+            print_dbg("msg: already have session for %u/%d", lgn->uid, fd);
+            return nullptr;
+        }
+    }
+    print_dbg("msg: new session for %u/%d", lgn->uid, fd);
+    /* create a new session */
+    auto &sess = lgn->sessions.emplace_back();
+    sess.fd = fd;
     /* reply */
     return lgn;
 }
@@ -375,7 +389,7 @@ static bool handle_read(int fd) {
     switch (msg & MSG_TYPE_MASK) {
         case MSG_START: {
             /* new login, register it */
-            auto *lgn = handle_login_new(fd, msg >> MSG_TYPE_BITS);
+            auto *lgn = handle_session_new(fd, msg >> MSG_TYPE_BITS);
             if (!lgn) {
                 return msg_send(fd, MSG_ERR);
             }
@@ -587,6 +601,8 @@ static bool drop_login(login &lgn) {
             fds[j].revents = 0;
         }
     }
+    /* mark the login to repopulate from passwd */
+    lgn.repopulate = true;
     /* this should never happen unless we have a bug */
     if (!lgn.sessions.empty()) {
         print_err("turnstiled: sessions not empty, it should be");
@@ -702,6 +718,10 @@ static bool srv_reaper(pid_t pid) {
             if (lgn.manage_rdir) {
                 rundir_clear(lgn.rundir);
                 lgn.manage_rdir = false;
+            }
+            /* mark to repopulate if there are no sessions */
+            if (lgn.sessions.empty()) {
+                lgn.repopulate = true;
             }
             lgn.term_pid = -1;
             lgn.kill_tried = false;
