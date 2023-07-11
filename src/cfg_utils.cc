@@ -21,7 +21,7 @@ static void read_bool(char const *name, char const *value, bool &val) {
 }
 
 void cfg_read(char const *cfgpath) {
-    char buf[DIRLEN_MAX];
+    char buf[1024];
 
     auto *f = std::fopen(cfgpath, "r");
     if (!f) {
@@ -31,7 +31,7 @@ void cfg_read(char const *cfgpath) {
         return;
     }
 
-    while (std::fgets(buf, DIRLEN_MAX, f)) {
+    while (std::fgets(buf, sizeof(buf), f)) {
         auto slen = strlen(buf);
         /* ditch the rest of the line if needed */
         if ((buf[slen - 1] != '\n')) {
@@ -133,90 +133,47 @@ void cfg_read(char const *cfgpath) {
     }
 }
 
-bool cfg_expand_rundir(
-    char *dest, std::size_t destsize, char const *tmpl,
-    unsigned int uid, unsigned int gid
+void cfg_expand_rundir(
+    std::string &dest, char const *tmpl, unsigned int uid, unsigned int gid
 ) {
-    auto destleft = destsize;
+    char buf[32];
     while (*tmpl) {
         auto mark = std::strchr(tmpl, '%');
         if (!mark) {
             /* no formatting mark in the rest of the string, copy all */
-            auto rlen = std::strlen(tmpl);
-            if (destleft > rlen) {
-                /* enough space incl terminating zero */
-                std::memcpy(dest, tmpl, rlen + 1);
-                return true;
-            } else {
-                /* not enough space left */
-                return false;
-            }
+            dest += tmpl;
+            break;
         }
         /* copy up to mark */
         auto rlen = std::size_t(mark - tmpl);
         if (rlen) {
-            if (destleft > rlen) {
-                std::memcpy(dest, tmpl, rlen);
-                destleft -= rlen;
-                dest += rlen;
-            } else {
-                /* not enough space left */
-                return false;
-            }
+            dest.append(tmpl, rlen);
         }
         /* trailing % or %%, just copy it as is */
         if (!mark[1] || ((mark[1] == '%') && !mark[2])) {
-            if (destleft > 1) {
-                *dest++ = '%';
-                *dest++ = '\0';
-                return true;
-            }
-            return false;
+            dest.push_back('%');
+            break;
         }
         ++mark;
         unsigned int wid;
-        switch (mark[0]) {
+        switch (*mark) {
             case 'u':
                 wid = uid;
                 goto writenum;
             case 'g':
                 wid = gid;
 writenum:
-                if (destleft <= 1) {
-                    /* not enough space */
-                    return false;
-                } else {
-                    auto nw = std::snprintf(dest, destleft, "%u", wid);
-                    if ((nw < 0) || (std::size_t(nw) >= destleft)) {
-                        return false;
-                    }
-                    dest += nw;
-                    destleft -= nw;
-                    tmpl = mark + 1;
-                    continue;
-                }
+                std::snprintf(buf, sizeof(buf), "%u", wid);
+                dest += buf;
+                break;
             case '%':
-                if (destleft > 1) {
-                    destleft -= 1;
-                    *dest++ = *mark++;
-                    tmpl = mark;
-                    continue;
-                } else {
-                    return false;
-                }
+                dest.push_back(*mark);
+                break;
             default:
-                /* copy as is */
-                if (destleft > 2) {
-                    destleft -= 2;
-                    *dest++ = '%';
-                    *dest++ = *mark++;
-                    tmpl = mark;
-                    continue;
-                } else {
-                    return false;
-                }
+                dest.push_back('%');
+                dest.push_back(*mark);
+                break;
         }
+        tmpl = mark + 1;
     }
-    *dest = '\0';
-    return true;
 }

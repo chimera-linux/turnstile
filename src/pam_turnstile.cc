@@ -41,7 +41,8 @@ static void free_sock(pam_handle_t *, void *data, int) {
 
 static bool open_session(
     pam_handle_t *pamh, unsigned int &uid, unsigned short &rlen,
-    char *orbuf, bool &set_rundir, bool &set_dbus
+    char *&orbuf, std::size_t dpfx, std::size_t dsfx,
+    bool &set_rundir, bool &set_dbus
 ) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
     if (!sock) {
@@ -151,7 +152,7 @@ static bool open_session(
                         if (!read_full(&set_dbus, sizeof(set_dbus))) {
                             goto err;
                         }
-                        if (!send_msg(MSG_REQ_RDATA)) {
+                        if (!send_msg(MSG_REQ_DATA)) {
                             goto err;
                         }
                         continue;
@@ -171,15 +172,24 @@ static bool open_session(
                     if (!read_full(&rlen, sizeof(rlen))) {
                         goto err;
                     }
+                    /* alloc tne buffer */
+                    if (rlen) {
+                        orbuf = static_cast<char *>(malloc(
+                            rlen + dpfx + dsfx + 1
+                        ));
+                        if (!orbuf) {
+                            goto err;
+                        }
+                    }
                     /* followed by a bool whether rundir should be set */
                     if (!read_full(&set_rundir, sizeof(set_rundir))) {
                         goto err;
                     }
                     /* followed by the string */
-                    if (!read_full(orbuf, rlen)) {
+                    if (rlen && !read_full(orbuf + dpfx, rlen)) {
                         goto err;
                     }
-                    orbuf[rlen] = '\0';
+                    orbuf[dpfx + rlen] = '\0';
                     return true;
                 }
                 default:
@@ -191,6 +201,7 @@ static bool open_session(
     return true;
 
 err:
+    std::free(orbuf);
     close(*sock);
     *sock = -1;
     return false;
@@ -208,7 +219,12 @@ extern "C" PAMAPI int pam_sm_open_session(
     unsigned short rlen = 0;
     bool set_rundir = false, set_dbus = false;
     /* potential rundir we are managing */
-    char rdir[DIRLEN_MAX + 1];
+    char *rdir = nullptr;
+    /* prefix and suffix for the buffer */
+    char const dpfx[] = "DBUS_SESSION_BUS_ADDRESS=unix:path=";
+    char const rpfx[] = "XDG_RUNTIME_DIR=";
+    char const dsfx[] = "/bus";
+    /* dual purpose */
     if (argc > 0) {
         if ((argc == 1) && !std::strcmp(argv[0], DPAM_SERVICE)) {
             return open_session_turnstiled(pamh);
@@ -216,36 +232,43 @@ extern "C" PAMAPI int pam_sm_open_session(
         pam_syslog(pamh, LOG_ERR, "Invalid module arguments");
         return PAM_SESSION_ERR;
     }
-    if (!open_session(pamh, uid, rlen, rdir, set_rundir, set_dbus)) {
+    if (!open_session(
+        pamh, uid, rlen, rdir, sizeof(dpfx) - 1, sizeof(dsfx) - 1,
+        set_rundir, set_dbus
+    )) {
         return PAM_SESSION_ERR;
     }
     if (rlen) {
-        char const dpfx[] = "DBUS_SESSION_BUS_ADDRESS=unix:path=";
-        char buf[sizeof(rdir) + sizeof(dpfx) + 4];
+        /* rdir path */
+        char *rpath = rdir + sizeof(dpfx) - 1;
+        /* write the prefix and suffix */
+        std::memcpy(rdir, dpfx, sizeof(dpfx) - 1);
+        std::memcpy(rpath + rlen, dsfx, sizeof(dsfx));
 
         /* try exporting a dbus session bus variable */
-        std::snprintf(buf, sizeof(buf), "%s%s/bus", dpfx, rdir);
-
         struct stat sbuf;
-        if (
-            set_dbus &&
-            !lstat(strchr(buf, '/'), &sbuf) && S_ISSOCK(sbuf.st_mode)
-        ) {
-            if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
+        if (set_dbus && !lstat(rpath, &sbuf) && S_ISSOCK(sbuf.st_mode)) {
+            if (pam_putenv(pamh, rdir) != PAM_SUCCESS) {
+                std::free(rdir);
                 return PAM_SESSION_ERR;
             }
         }
 
         if (!set_rundir) {
+            std::free(rdir);
             return PAM_SUCCESS;
         }
 
-        std::snprintf(buf, sizeof(buf), "XDG_RUNTIME_DIR=%s", rdir);
+        /* replace the prefix and strip /bus */
+        std::memcpy(rpath - sizeof(rpfx) + 1, rpfx, sizeof(rpfx) - 1);
+        rpath[rlen] = '\0';
 
         /* set rundir too if needed */
-        if (pam_putenv(pamh, buf) != PAM_SUCCESS) {
+        if (pam_putenv(pamh, rpath - sizeof(rpfx) + 1) != PAM_SUCCESS) {
+            std::free(rdir);
             return PAM_SESSION_ERR;
         }
+        std::free(rdir);
     }
     return PAM_SUCCESS;
 }

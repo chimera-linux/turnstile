@@ -20,9 +20,6 @@
 #define SOCK_DIR DPAM_SERVICE
 #define DAEMON_SOCK RUN_PATH "/" SOCK_DIR "/control.sock"
 
-/* maximum length of a directory path we can receive */
-#define DIRLEN_MAX 1024
-
 /* protocol messages
  *
  * this is a simple stream protocol; there are messages which fit within
@@ -43,7 +40,7 @@
  * CLIENT: if MSG_OK_WAIT was received, waits for another message
  * SERVER: once service manager starts, MSG_OK_DONE is sent (followed by
  *         the bool)
- * CLIENT: sends MSG_REQ_RDATA
+ * CLIENT: sends MSG_REQ_DATA
  * SERVER: responds with MSG_DATA, followed by rundir length (uint16_t),
  *         a bool specifying whether rundir should be set, and the rundir
  *         string itself
@@ -55,8 +52,7 @@
 enum {
     MSG_OK_WAIT = 0x1, /* login, wait */
     MSG_OK_DONE, /* ready, proceed */
-    MSG_REQ_RLEN, /* rundir length request */
-    MSG_REQ_RDATA, /* rundir string request + how much is left */
+    MSG_REQ_DATA, /* session data request */
     MSG_DATA,
     MSG_START,
     /* sent by server on errors */

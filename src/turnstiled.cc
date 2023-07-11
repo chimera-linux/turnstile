@@ -130,7 +130,7 @@ static bool srv_start(login &lgn) {
      */
     if (cdata->manage_rdir) {
         print_dbg("srv: setup rundir for %u", lgn.uid);
-        if (!rundir_make(lgn.rundir, lgn.uid, lgn.gid)) {
+        if (!rundir_make(lgn.rundir.data(), lgn.uid, lgn.gid)) {
             return false;
         }
     }
@@ -321,15 +321,11 @@ static login *login_populate(unsigned int uid) {
     lgn->username = pwd->pw_name;
     lgn->homedir = pwd->pw_dir;
     lgn->shell = pwd->pw_shell;
-    std::memset(lgn->rundir, 0, sizeof(lgn->rundir));
-    if (!cfg_expand_rundir(
-        lgn->rundir, sizeof(lgn->rundir), cdata->rdir_path.data(),
-        lgn->uid, lgn->gid
-    )) {
-        print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
-        return nullptr;
-    }
-    lgn->manage_rdir = cdata->manage_rdir && lgn->rundir[0];
+    lgn->rundir.clear();
+    /* somewhat heuristical */
+    lgn->rundir.reserve(cdata->rdir_path.size() + 8);
+    cfg_expand_rundir(lgn->rundir, cdata->rdir_path.data(), lgn->uid, lgn->gid);
+    lgn->manage_rdir = cdata->manage_rdir && !lgn->rundir.empty();
     lgn->repopulate = false;
     return lgn;
 }
@@ -476,7 +472,7 @@ static bool handle_read(int fd) {
             }
             break;
         }
-        case MSG_REQ_RDATA: {
+        case MSG_REQ_DATA: {
             auto *lgn = get_login(fd);
             if (!lgn) {
                 return send_msg(fd, MSG_ERR);
@@ -486,7 +482,7 @@ static bool handle_read(int fd) {
                 return false;
             }
             /* rundir length */
-            unsigned short rlen = std::strlen(lgn->rundir);
+            unsigned short rlen = lgn->rundir.size();
             if (!send_full(fd, &rlen, sizeof(rlen))) {
                 return false;
             }
@@ -496,7 +492,7 @@ static bool handle_read(int fd) {
                 return false;
             }
             /* rundir string */
-            return send_full(fd, lgn->rundir, rlen);
+            return send_full(fd, lgn->rundir.data(), rlen);
         }
         default:
             break;
@@ -735,7 +731,7 @@ static bool srv_reaper(pid_t pid) {
                 print_err("srv: died without notifying readiness");
                 /* clear rundir if needed */
                 if (lgn.manage_rdir) {
-                    rundir_clear(lgn.rundir);
+                    rundir_clear(lgn.rundir.data());
                     lgn.manage_rdir = false;
                 }
                 return drop_login(lgn);
@@ -761,7 +757,7 @@ static bool srv_reaper(pid_t pid) {
             lgn.remove_sdir();
             /* clear rundir if needed */
             if (lgn.manage_rdir) {
-                rundir_clear(lgn.rundir);
+                rundir_clear(lgn.rundir.data());
                 lgn.manage_rdir = false;
             }
             /* mark to repopulate if there are no sessions */

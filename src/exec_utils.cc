@@ -429,8 +429,8 @@ void srv_child(login &lgn, char const *backend, bool dummy) {
     if (!have_env_path) {
         add_str("PATH=" _PATH_DEFPATH);
     }
-    if (lgn.rundir[0] && !have_env_rundir) {
-        add_str("XDG_RUNTIME_DIR=", lgn.rundir);
+    if (!lgn.rundir.empty() && !have_env_rundir) {
+        add_str("XDG_RUNTIME_DIR=", lgn.rundir.data());
     }
     /* make up env and arg arrays */
     std::vector<char const *> argp{};

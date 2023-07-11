@@ -36,6 +36,8 @@ struct login {
     std::string shell{};
     /* the user's home directory */
     std::string homedir{};
+    /* the XDG_RUNTIME_DIR */
+    std::string rundir{};
     /* the PID of the service manager process we are currently managing */
     pid_t srv_pid = -1;
     /* the PID of the backend "ready" process that reports final readiness */
@@ -68,8 +70,6 @@ struct login {
     bool kill_tried = false;
     /* whether a pipe is queued */
     bool pipe_queued = false;
-    /* XDG_RUNTIME_DIR path, regardless of if managed or not */
-    char rundir[DIRLEN_MAX];
 
     login();
     void remove_sdir();
@@ -80,14 +80,13 @@ struct login {
 /* filesystem utilities */
 int dir_make_at(int dfd, char const *dname, mode_t mode);
 bool rundir_make(char *rundir, unsigned int uid, unsigned int gid);
-void rundir_clear(char *rundir);
+void rundir_clear(char const *rundir);
 bool dir_clear_contents(int dfd);
 
 /* config file related utilities */
 void cfg_read(char const *cfgpath);
-bool cfg_expand_rundir(
-    char *dest, std::size_t destsize, char const *tmpl,
-    unsigned int uid, unsigned int gid
+void cfg_expand_rundir(
+    std::string &dest, char const *tmpl, unsigned int uid, unsigned int gid
 );
 
 /* service manager utilities */

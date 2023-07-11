@@ -124,7 +124,7 @@ bool rundir_make(char *rundir, unsigned int uid, unsigned int gid) {
     return true;
 }
 
-void rundir_clear(char *rundir) {
+void rundir_clear(char const *rundir) {
     struct stat dstat;
     print_dbg("rundir: clear directory %s", rundir);
     int dfd = open(rundir, O_RDONLY | O_NOFOLLOW);
