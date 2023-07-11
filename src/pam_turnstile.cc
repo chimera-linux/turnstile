@@ -17,7 +17,6 @@
 #include <algorithm>
 
 #include <pwd.h>
-#include <endian.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/stat.h>

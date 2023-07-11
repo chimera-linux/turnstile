@@ -22,7 +22,6 @@
 #include <pwd.h>
 #include <poll.h>
 #include <fcntl.h>
-#include <endian.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
