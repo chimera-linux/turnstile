@@ -346,6 +346,10 @@ void srv_child(session &sess, char const *backend, bool dummy) {
         return;
     }
     close(tdirfd);
+    /* stringify the uid/gid */
+    char uidbuf[32], gidbuf[32];
+    std::snprintf(uidbuf, sizeof(uidbuf), "%u", sess.uid);
+    std::snprintf(gidbuf, sizeof(gidbuf), "%u", sess.gid);
     /* build up env and args list */
     std::vector<char> execs{};
     std::size_t argc = 0, nexec = 0;
@@ -366,9 +370,9 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* arg1: action */
     add_str("run");
     /* arg1: ready pipe */
-    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/ready");
+    add_str(RUN_PATH, "/", SOCK_DIR, "/", uidbuf, "/ready");
     /* arg2: srvdir */
-    add_str(RUN_PATH, "/", SOCK_DIR, "/", sess.uids, "/", tdirn);
+    add_str(RUN_PATH, "/", SOCK_DIR, "/", uidbuf, "/", tdirn);
     /* arg3: confdir */
     add_str(CONF_PATH, "/backend");
     argc = nexec;
@@ -417,10 +421,10 @@ void srv_child(session &sess, char const *backend, bool dummy) {
         add_str("HOME=", sess.homedir.data());
     }
     if (!have_env_uid) {
-        add_str("UID=", sess.uids);
+        add_str("UID=", uidbuf);
     }
     if (!have_env_gid) {
-        add_str("GID=", sess.gids);
+        add_str("GID=", gidbuf);
     }
     if (!have_env_path) {
         add_str("PATH=" _PATH_DEFPATH);

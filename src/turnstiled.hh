@@ -63,8 +63,6 @@ struct session {
     bool pipe_queued = false;
     /* XDG_RUNTIME_DIR path, regardless of if managed or not */
     char rundir[DIRLEN_MAX];
-    /* string versions of uid and gid */
-    char uids[32], gids[32];
 
     session();
     void remove_sdir();
@@ -82,7 +80,7 @@ bool dir_clear_contents(int dfd);
 void cfg_read(char const *cfgpath);
 bool cfg_expand_rundir(
     char *dest, std::size_t destsize, char const *tmpl,
-    char const *uid, char const *gid
+    unsigned int uid, unsigned int gid
 );
 
 /* service manager utilities */

@@ -135,7 +135,7 @@ void cfg_read(char const *cfgpath) {
 
 bool cfg_expand_rundir(
     char *dest, std::size_t destsize, char const *tmpl,
-    char const *uid, char const *gid
+    unsigned int uid, unsigned int gid
 ) {
     auto destleft = destsize;
     while (*tmpl) {
@@ -174,23 +174,22 @@ bool cfg_expand_rundir(
             return false;
         }
         ++mark;
-        char const *wnum;
+        unsigned int wid;
         switch (mark[0]) {
             case 'u':
-                wnum = uid;
+                wid = uid;
                 goto writenum;
             case 'g':
-                wnum = gid;
+                wid = gid;
 writenum:
                 if (destleft <= 1) {
                     /* not enough space */
                     return false;
                 } else {
-                    auto nw = std::strlen(wnum);
-                    if (nw >= destleft) {
+                    auto nw = std::snprintf(dest, destleft, "%u", wid);
+                    if ((nw < 0) || (std::size_t(nw) >= destleft)) {
                         return false;
                     }
-                    std::memcpy(dest, wnum, nw);
                     dest += nw;
                     destleft -= nw;
                     tmpl = mark + 1;

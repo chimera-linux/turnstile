@@ -74,7 +74,9 @@ session::session() {
 }
 
 void session::remove_sdir() {
-    unlinkat(userv_dirfd, this->uids, AT_REMOVEDIR);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%u", this->uid);
+    unlinkat(userv_dirfd, buf, AT_REMOVEDIR);
     /* just in case, we know this is a named pipe */
     unlinkat(this->dirfd, "ready", 0);
     dir_clear_contents(this->dirfd);
@@ -118,6 +120,9 @@ static int sigpipe[2] = {-1, -1};
 
 /* start the service manager instance for a session */
 static bool srv_start(session &sess) {
+    /* prepare some strings */
+    char uidbuf[32];
+    std::snprintf(uidbuf, sizeof(uidbuf), "%u", sess.uid);
     /* mark as waiting */
     sess.srv_wait = true;
     /* make rundir if needed, we don't want to create that and session dir
@@ -134,7 +139,7 @@ static bool srv_start(session &sess) {
     if (!cdata->disable) {
         print_dbg("srv: create session dir for %u", sess.uid);
         /* make the directory itself */
-        sess.dirfd = dir_make_at(userv_dirfd, sess.uids, 0700);
+        sess.dirfd = dir_make_at(userv_dirfd, uidbuf, 0700);
         if (sess.dirfd < 0) {
             print_err(
                 "srv: failed to make session dir for %u (%s)",
@@ -144,7 +149,7 @@ static bool srv_start(session &sess) {
         }
         /* ensure it's owned by the user */
         if (fchownat(
-            userv_dirfd, sess.uids, sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
+            userv_dirfd, uidbuf, sess.uid, sess.gid, AT_SYMLINK_NOFOLLOW
         ) || fcntl(sess.dirfd, F_SETFD, FD_CLOEXEC)) {
             print_err(
                 "srv: session dir setup failed for %u (%s)",
@@ -324,9 +329,6 @@ static session *handle_session_new(int fd, unsigned int uid) {
     if (!sess) {
         sess = &sessions.emplace_back();
     }
-    /* write uid and gid strings */
-    std::snprintf(sess->uids, sizeof(sess->uids), "%u", pwd->pw_uid);
-    std::snprintf(sess->gids, sizeof(sess->gids), "%u", pwd->pw_gid);
     for (auto c: sess->conns) {
         if (c == fd) {
             print_dbg("msg: already have session %u", pwd->pw_uid);
@@ -336,7 +338,7 @@ static session *handle_session_new(int fd, unsigned int uid) {
     std::memset(sess->rundir, 0, sizeof(sess->rundir));
     if (!cfg_expand_rundir(
         sess->rundir, sizeof(sess->rundir), cdata->rdir_path.data(),
-        sess->uids, sess->gids
+        pwd->pw_uid, pwd->pw_gid
     )) {
         print_dbg("msg: failed to expand rundir for %u", pwd->pw_uid);
         return nullptr;
