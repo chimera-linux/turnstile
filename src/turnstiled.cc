@@ -236,14 +236,6 @@ static login *get_login(int fd) {
     return nullptr;
 }
 
-static bool msg_send(int fd, unsigned int msg) {
-    if (send(fd, &msg, sizeof(msg), 0) < 0) {
-        print_err("msg: send failed (%s)", strerror(errno));
-        return false;
-    }
-    return (msg != MSG_ERR);
-}
-
 static bool get_peer_euid(int fd, unsigned int &euid) {
 #if defined(SO_PEERCRED)
     /* Linux or OpenBSD */
@@ -375,33 +367,98 @@ static login *handle_session_new(int fd, unsigned int uid) {
     return lgn;
 }
 
-static bool handle_read(int fd) {
-    unsigned int msg;
-    auto ret = recv(fd, &msg, sizeof(msg), 0);
-    if (ret != sizeof(msg)) {
-        if (errno == EAGAIN) {
-            return true;
+static bool sock_block(int fd, short events) {
+    if (errno == EINTR) {
+        return true;
+    } else if ((errno != EAGAIN) && (errno != EWOULDBLOCK)) {
+        return false;
+    }
+    /* re-poll */
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = events;
+    pfd.revents = 0;
+    for (;;) {
+        auto pret = poll(&pfd, 1, -1);
+        if (pret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        } else if (pret == 0) {
+            continue;
         }
+        break;
+    }
+    return true;
+}
+
+static bool recv_full(int fd, void *buf, size_t len) {
+    auto *cbuf = static_cast<unsigned char *>(buf);
+    while (len) {
+        auto ret = recv(fd, cbuf, len, 0);
+        if (ret < 0) {
+            if (sock_block(fd, POLLIN)) {
+                continue;
+            }
+            return false;
+        }
+        cbuf += ret;
+        len -= ret;
+    }
+    return true;
+}
+
+static bool send_full(int fd, void *buf, size_t len) {
+    auto *cbuf = static_cast<unsigned char *>(buf);
+    while (len) {
+        auto ret = send(fd, cbuf, len, 0);
+        if (ret < 0) {
+            if (sock_block(fd, POLLOUT)) {
+                continue;
+            }
+            print_err("msg: send failed (%s)", strerror(errno));
+            return false;
+        }
+        cbuf += ret;
+        len -= ret;
+    }
+    return true;
+}
+
+static bool send_msg(int fd, unsigned char msg) {
+    if (!send_full(fd, &msg, sizeof(msg))) {
+        return false;
+    }
+    return (msg != MSG_ERR);
+}
+
+static bool handle_read(int fd) {
+    unsigned char msg;
+    if (!recv_full(fd, &msg, sizeof(msg))) {
         print_err("msg: recv failed (%s)", strerror(errno));
         return false;
     }
-    print_dbg(
-        "msg: read %u (%u, %d)", msg & MSG_TYPE_MASK,
-        msg >> MSG_TYPE_BITS, fd
-    );
-    switch (msg & MSG_TYPE_MASK) {
+    print_dbg("msg: read %u (%d)", msg, fd);
+    switch (msg) {
         case MSG_START: {
+            unsigned int uid;
+            if (!recv_full(fd, &uid, sizeof(uid))) {
+                print_err("msg: recv failed (%s)", strerror(errno));
+            }
             /* new login, register it */
-            auto *lgn = handle_session_new(fd, msg >> MSG_TYPE_BITS);
+            auto *lgn = handle_session_new(fd, uid);
             if (!lgn) {
-                return msg_send(fd, MSG_ERR);
+                return send_msg(fd, MSG_ERR);
             }
             if (!lgn->srv_wait) {
                 /* already started, reply with ok */
                 print_dbg("msg: done");
-                return msg_send(
-                    fd, MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE)
-                );
+                if (!send_msg(fd, MSG_OK_DONE)) {
+                    return false;
+                }
+                bool cdbus = cdata->export_dbus;
+                return send_full(fd, &cdbus, sizeof(cdbus));
             } else {
                 if (lgn->srv_pid == -1) {
                     if (lgn->term_pid != -1) {
@@ -415,46 +472,32 @@ static bool handle_read(int fd) {
                         }
                     }
                 }
-                msg = MSG_OK_WAIT;
                 print_dbg("msg: wait");
-                return msg_send(fd, MSG_OK_WAIT);
+                return send_msg(fd, MSG_OK_WAIT);
             }
             break;
-        }
-        case MSG_REQ_RLEN: {
-            auto *lgn = get_login(fd);
-            if (!lgn) {
-                return msg_send(fd, MSG_ERR);
-            }
-            /* send rundir length */
-            if (!lgn->rundir[0]) {
-                /* send zero length */
-                return msg_send(fd, MSG_DATA);
-            }
-            auto rlen = std::strlen(lgn->rundir);
-            if (cdata->manage_rdir) {
-                return msg_send(fd, MSG_ENCODE(rlen + DIRLEN_MAX));
-            } else {
-                return msg_send(fd, MSG_ENCODE(rlen));
-            }
         }
         case MSG_REQ_RDATA: {
             auto *lgn = get_login(fd);
             if (!lgn) {
-                return msg_send(fd, MSG_ERR);
+                return send_msg(fd, MSG_ERR);
             }
-            msg >>= MSG_TYPE_BITS;
-            if (msg == 0) {
-                return msg_send(fd, MSG_ERR);
+            /* data message */
+            if (!send_msg(fd, MSG_DATA)) {
+                return false;
             }
-            unsigned int v = 0;
-            auto rlen = std::strlen(lgn->rundir);
-            if (msg > rlen) {
-                return msg_send(fd, MSG_ERR);
+            /* rundir length */
+            unsigned short rlen = std::strlen(lgn->rundir);
+            if (!send_full(fd, &rlen, sizeof(rlen))) {
+                return false;
             }
-            auto *rstr = lgn->rundir;
-            std::memcpy(&v, rstr + rlen - msg, MSG_SBYTES(msg));
-            return msg_send(fd, MSG_ENCODE(le32toh(v)));
+            /* rundir set */
+            bool rset = cdata->manage_rdir;
+            if (!send_full(fd, &rset, sizeof(rset))) {
+                return false;
+            }
+            /* rundir string */
+            return send_full(fd, lgn->rundir, rlen);
         }
         default:
             break;
@@ -544,7 +587,7 @@ static void conn_term(int conn) {
 }
 
 static bool sock_new(char const *path, int &sock, mode_t mode) {
-    sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    sock = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock < 0) {
         print_err("socket failed (%s)", strerror(errno));
         return false;
@@ -702,10 +745,10 @@ static bool srv_reaper(pid_t pid) {
         } else if (pid == lgn.start_pid) {
             /* reaping service startup jobs */
             print_dbg("srv: ready notification");
-            unsigned int msg = MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE);
+            bool edbus = cdata->export_dbus;
             for (auto &sess: lgn.sessions) {
-                if (send(sess.fd, &msg, sizeof(msg), 0) < 0) {
-                    print_err("conn: send failed (%s)", strerror(errno));
+                if (send_msg(sess.fd, MSG_OK_DONE)) {
+                    send_full(sess.fd, &edbus, sizeof(edbus));
                 }
             }
             /* disarm an associated timer */

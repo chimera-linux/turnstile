@@ -25,34 +25,33 @@
 
 /* protocol messages
  *
- * this is a simple protocol consisting of uint-sized messages; each
- * message carries the type (4 bits) and optionally auxiliary data
- * (only some messages; MSG_DATA and MSG_REQ_RDATA)
+ * this is a simple stream protocol; there are messages which fit within
+ * a single byte, optionally followed by message-specific data bytes
  *
  * turnstiled is the server; the pam module is the client
  *
- * the client connects to DAEMON_SOCK (seqpacket sockets are used)
+ * the client connects to DAEMON_SOCK
  *
  * from there, the following sequence happens:
  *
- * CLIENT: sends MSG_START with uid and enters a message loop (state machine)
+ * CLIENT: sends MSG_START, followed by uid (unsigned int), and enters a
+ *         message loop (state machine)
  * SERVER: if service manager for the user is already running, responds
- *         with MSG_OK_DONE (with export_dbus attached as aux data); else
- *         initiates startup and responds with MSG_OK_WAIT
- * CLIENT: if MSG_OK_WAIT was received, waits for a message
- * SERVER: once service manager starts, MSG_OK_DONE is sent
- * CLIENT: sends MSG_REQ_RLEN
- * SERVER: responds with MSG_DATA with rundir length (0 if not known,
-           DIRLEN_MAX will be added to it if managed).
- * loop:
- *   CLIENT: sends MSG_REQ_RDATA with number of remaining bytes of rundir
- *           that are yet to be received
- *   SERVER: responds with a MSG_DATA packet until none is left
+ *         with MSG_OK_DONE followed by a bool specifying whether the
+ *         session bus address should be exported; else initiates startup
+ *         and responds with MSG_OK_WAIT
+ * CLIENT: if MSG_OK_WAIT was received, waits for another message
+ * SERVER: once service manager starts, MSG_OK_DONE is sent (followed by
+ *         the bool)
+ * CLIENT: sends MSG_REQ_RDATA
+ * SERVER: responds with MSG_DATA, followed by rundir length (uint16_t),
+ *         a bool specifying whether rundir should be set, and the rundir
+ *         string itself
  * CLIENT: finishes startup, exports XDG_RUNTIME_DIR if needed as well
  *         as DBUS_SESSION_BUS_ADDRESS, and everything is done
  */
 
-/* this is a regular unsigned int */
+/* byte-sized message identifiers */
 enum {
     MSG_OK_WAIT = 0x1, /* login, wait */
     MSG_OK_DONE, /* ready, proceed */
@@ -62,16 +61,6 @@ enum {
     MSG_START,
     /* sent by server on errors */
     MSG_ERR,
-
-    MSG_TYPE_BITS = 4,
-    MSG_TYPE_MASK = 0xF,
-    MSG_DATA_BYTES = sizeof(unsigned int) - 1
 };
-
-#define MSG_ENCODE_AUX(v, tp) \
-    (tp | (static_cast<unsigned int>(v) << MSG_TYPE_BITS))
-
-#define MSG_ENCODE(v) MSG_ENCODE_AUX(v, MSG_DATA)
-#define MSG_SBYTES(len) std::min(int(MSG_DATA_BYTES), int(len))
 
 #endif

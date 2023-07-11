@@ -41,7 +41,7 @@ static void free_sock(pam_handle_t *, void *data, int) {
 }
 
 static bool open_session(
-    pam_handle_t *pamh, unsigned int &uid, unsigned int &orlen,
+    pam_handle_t *pamh, unsigned int &uid, unsigned short &rlen,
     char *orbuf, bool &set_rundir, bool &set_dbus
 ) {
     int *sock = static_cast<int *>(std::malloc(sizeof(int)));
@@ -50,7 +50,7 @@ static bool open_session(
     }
 
     /* blocking socket and a simple protocol */
-    *sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    *sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (*sock == -1) {
         return false;
     }
@@ -70,13 +70,24 @@ static bool open_session(
 
     char const *puser;
     passwd *pwd;
-    int ret, rlen;
 
-    auto send_msg = [sock](unsigned int msg) {
-        if (write(*sock, &msg, sizeof(msg)) < 0) {
-            return false;
+    auto send_full = [sock](void *buf, size_t len) -> bool {
+        auto *cbuf = static_cast<unsigned char *>(buf);
+        while (len) {
+            auto n = write(*sock, cbuf, len);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            cbuf += n;
+            len -= n;
         }
         return true;
+    };
+    auto send_msg = [&send_full](unsigned char msg) -> bool {
+        return send_full(&msg, sizeof(msg));
     };
 
     if (pam_get_user(pamh, &puser, nullptr) != PAM_SUCCESS) {
@@ -95,19 +106,36 @@ static bool open_session(
         goto err;
     }
 
-    if (!send_msg(MSG_ENCODE_AUX(pwd->pw_uid, MSG_START))) {
+    if (!send_msg(MSG_START)) {
+        goto err;
+    }
+    if (!send_full(&uid, sizeof(uid))) {
         goto err;
     }
     /* main message loop */
     {
-        unsigned int msg;
-        unsigned int state = 0;
-        bool got_rlen = false;
-        char *rbuf = orbuf;
+        unsigned char msg;
+        unsigned char state = 0;
+
+        /* read an entire known-size buffer in one go */
+        auto read_full = [sock](void *buf, size_t len) -> bool {
+            auto *cbuf = static_cast<unsigned char *>(buf);
+            while (len) {
+                auto n = read(*sock, cbuf, len);
+                if (n < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    return false;
+                }
+                cbuf += n;
+                len -= n;
+            }
+            return true;
+        };
 
         for (;;) {
-            ret = read(*sock, &msg, sizeof(msg));
-            if (ret < 0) {
+            if (!read_full(&msg, sizeof(msg))) {
                 goto err;
             }
             switch (state) {
@@ -119,10 +147,12 @@ static bool open_session(
                      * it means either an error or that the system is now
                      * fully ready
                      */
-                    if ((msg & MSG_TYPE_MASK) == MSG_OK_DONE) {
-                        state = msg & MSG_TYPE_MASK;
-                        set_dbus = !!(msg >> MSG_TYPE_BITS);
-                        if (!send_msg(MSG_REQ_RLEN)) {
+                    if (msg == MSG_OK_DONE) {
+                        state = msg;
+                        if (!read_full(&set_dbus, sizeof(set_dbus))) {
+                            goto err;
+                        }
+                        if (!send_msg(MSG_REQ_RDATA)) {
                             goto err;
                         }
                         continue;
@@ -133,48 +163,25 @@ static bool open_session(
                     /* bad message */
                     goto err;
                 case MSG_OK_DONE: {
-                    if ((msg & MSG_TYPE_MASK) != MSG_DATA) {
+                    if (msg != MSG_DATA) {
                         goto err;
                     }
                     /* after MSG_OK_DONE, we should receive the runtime dir
                      * length first; if zero, it means we are completely done
                      */
-                    msg >>= MSG_TYPE_BITS;
-                    if (!got_rlen) {
-                        if (msg == 0) {
-                            orlen = 0;
-                            return true;
-                        } else if (msg > DIRLEN_MAX) {
-                            set_rundir = true;
-                            msg -= DIRLEN_MAX;
-                            if (msg > DIRLEN_MAX) {
-                                goto err;
-                            }
-                        }
-                        got_rlen = true;
-                        rlen = int(msg);
-                        orlen = msg;
-                        if (!send_msg(MSG_ENCODE_AUX(rlen, MSG_REQ_RDATA))) {
-                            goto err;
-                        }
-                        continue;
-                    }
-                    /* we are receiving the string... */
-                    int pkts = MSG_SBYTES(rlen);
-                    msg = htole32(msg);
-                    std::memcpy(rbuf, &msg, pkts);
-                    rbuf += pkts;
-                    rlen -= pkts;
-                    if (rlen == 0) {
-                        /* we have received the whole thing, terminate */
-                        *rbuf = '\0';
-                        return true;
-                    }
-                    if (!send_msg(MSG_ENCODE_AUX(rlen, MSG_REQ_RDATA))) {
+                    if (!read_full(&rlen, sizeof(rlen))) {
                         goto err;
                     }
-                    /* keep receiving pieces */
-                    continue;
+                    /* followed by a bool whether rundir should be set */
+                    if (!read_full(&set_rundir, sizeof(set_rundir))) {
+                        goto err;
+                    }
+                    /* followed by the string */
+                    if (!read_full(orbuf, rlen)) {
+                        goto err;
+                    }
+                    orbuf[rlen] = '\0';
+                    return true;
                 }
                 default:
                     goto err;
@@ -198,7 +205,8 @@ static int open_session_turnstiled(pam_handle_t *) {
 extern "C" PAMAPI int pam_sm_open_session(
     pam_handle_t *pamh, int, int argc, char const **argv
 ) {
-    unsigned int uid, rlen = 0;
+    unsigned int uid;
+    unsigned short rlen = 0;
     bool set_rundir = false, set_dbus = false;
     /* potential rundir we are managing */
     char rdir[DIRLEN_MAX + 1];
