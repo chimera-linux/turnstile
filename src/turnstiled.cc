@@ -357,6 +357,9 @@ static login *handle_session_new(int fd, unsigned int uid) {
     /* acknowledge the login */
     print_dbg("msg: welcome %u", uid);
     auto *lgn = login_populate(uid);
+    if (!lgn) {
+        return nullptr;
+    }
     /* check the sessions */
     for (auto &sess: lgn->sessions) {
         if (sess.fd == fd) {
