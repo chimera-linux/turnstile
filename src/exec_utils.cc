@@ -76,8 +76,10 @@ bool srv_boot(session &sess, char const *backend) {
     return true;
 }
 
-static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
-    if (initgroups(sess.username.data(), sess.gid) != 0) {
+static bool dpam_setup_groups(
+    pam_handle_t *pamh, char const *user, unsigned int gid
+) {
+    if (initgroups(user, gid) != 0) {
         perror("srv: failed to set supplementary groups");
         return false;
     }
@@ -90,18 +92,18 @@ static bool dpam_setup_groups(pam_handle_t *pamh, session const &sess) {
     return true;
 }
 
-static pam_handle_t *dpam_begin(session const &sess) {
+static pam_handle_t *dpam_begin(char const *user, unsigned int gid) {
     pam_conv cnv = {
         PAM_CONV_FUNC,
         nullptr
     };
     pam_handle_t *pamh = nullptr;
-    auto pst = pam_start(DPAM_SERVICE, sess.username.data(), &cnv, &pamh);
+    auto pst = pam_start(DPAM_SERVICE, user, &cnv, &pamh);
     if (pst != PAM_SUCCESS) {
         fprintf(stderr, "srv: pam_start: %s", pam_strerror(pamh, pst));
         return nullptr;
     }
-    if (!dpam_setup_groups(pamh, sess)) {
+    if (!dpam_setup_groups(pamh, user, gid)) {
         return nullptr;
     }
     return pamh;
@@ -301,7 +303,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     }
     /* begin pam session setup */
     if (is_root && !dummy) {
-        pamh = dpam_begin(sess);
+        pamh = dpam_begin(sess.username.data(), sess.gid);
         if (!dpam_open(pamh)) {
             return;
         }
