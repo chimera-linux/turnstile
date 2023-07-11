@@ -23,8 +23,8 @@
 #endif
 
 static bool exec_script(
-    session &sess, char const *backend,
-    char const *arg, char const *data, pid_t &outpid
+    char const *backend, char const *arg, char const *data,
+    unsigned int uid, unsigned int gid, pid_t &outpid
 ) {
     auto pid = fork();
     if (pid < 0) {
@@ -43,11 +43,11 @@ static bool exec_script(
     }
     /* child process */
     if (getuid() == 0) {
-        if (setgid(sess.gid) != 0) {
+        if (setgid(gid) != 0) {
             perror("srv: failed to set gid");
             exit(1);
         }
-        if (setuid(sess.uid) != 0) {
+        if (setuid(uid) != 0) {
             perror("srv: failed to set uid");
             exit(1);
         }
@@ -68,7 +68,7 @@ static bool exec_script(
 bool srv_boot(session &sess, char const *backend) {
     print_dbg("srv: startup (ready)");
     if (!exec_script(
-        sess, backend, "ready", sess.srvstr.data(), sess.start_pid
+        backend, "ready", sess.srvstr.data(), sess.uid, sess.gid, sess.start_pid
     )) {
         print_err("srv: fork failed (%s)", strerror(errno));
         return false;
@@ -162,7 +162,8 @@ static void sig_handler(int sign) {
 }
 
 static void fork_and_wait(
-    pam_handle_t *pamh, session &sess, char const *backend, bool dummy
+    pam_handle_t *pamh, char const *backend,
+    unsigned int uid, unsigned int gid, bool dummy
 ) {
     int pst, status;
     int term_count = 0;
@@ -229,7 +230,7 @@ static void fork_and_wait(
             }
             std::snprintf(buf, sizeof(buf), "%zu", size_t(p));
             /* otherwise run the stop part */
-            if (!exec_script(sess, backend, "stop", buf, outp)) {
+            if (!exec_script(backend, "stop", buf, uid, gid, outp)) {
                 /* failed? */
                 perror("srv: stop exec failed, fall back to TERM");
                 kill(p, SIGTERM);
@@ -308,7 +309,7 @@ void srv_child(session &sess, char const *backend, bool dummy) {
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
-    fork_and_wait(pamh, sess, backend, dummy);
+    fork_and_wait(pamh, backend, sess.uid, sess.gid, dummy);
     /* dummy service manager if requested */
     if (dummy) {
         srv_dummy();
