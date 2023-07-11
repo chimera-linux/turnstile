@@ -19,10 +19,15 @@
 
 #include "protocol.hh"
 
-/* represents a collection of logins for a specific user id */
+/* represents a single session within a login */
+struct session {
+    int fd;
+};
+
+/* represents a collection of sessions for a specific user id */
 struct login {
     /* a list of connection file descriptors for this login */
-    std::vector<int> conns{};
+    std::vector<session> sessions{};
     /* the username */
     std::string username{};
     /* the string the backend 'run' hands over to 'ready' */

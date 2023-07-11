@@ -226,8 +226,8 @@ static bool srv_start(login &lgn) {
 
 static login *get_login(int fd) {
     for (auto &lgn: logins) {
-        for (auto c: lgn.conns) {
-            if (fd == c) {
+        for (auto &sess: lgn.sessions) {
+            if (fd == sess.fd) {
                 return &lgn;
             }
         }
@@ -329,8 +329,8 @@ static login *handle_login_new(int fd, unsigned int uid) {
     if (!lgn) {
         lgn = &logins.emplace_back();
     }
-    for (auto c: lgn->conns) {
-        if (c == fd) {
+    for (auto &sess: lgn->sessions) {
+        if (sess.fd == fd) {
             print_dbg("msg: already have login %u", pwd->pw_uid);
             return nullptr;
         }
@@ -344,7 +344,10 @@ static login *handle_login_new(int fd, unsigned int uid) {
         return nullptr;
     }
     print_dbg("msg: setup login %u", pwd->pw_uid);
-    lgn->conns.push_back(fd);
+    /* create a new session */
+    auto &sess = lgn->sessions.emplace_back();
+    sess.fd = fd;
+    /* fill in the rest of the info just in case */
     lgn->uid = pwd->pw_uid;
     lgn->gid = pwd->pw_gid;
     lgn->username = pwd->pw_name;
@@ -483,14 +486,14 @@ static bool check_linger(login const &lgn) {
 
 /* terminate given conn, but only if within login */
 static bool conn_term_login(login &lgn, int conn) {
-    for (auto cit = lgn.conns.begin(); cit != lgn.conns.end(); ++cit) {
-        if (*cit != conn) {
+    for (auto cit = lgn.sessions.begin(); cit != lgn.sessions.end(); ++cit) {
+        if (cit->fd != conn) {
             continue;
         }
         print_dbg("conn: close %d for login %u", conn, lgn.uid);
-        lgn.conns.erase(cit);
+        lgn.sessions.erase(cit);
         /* empty now; shut down login */
-        if (lgn.conns.empty() && !check_linger(lgn)) {
+        if (lgn.sessions.empty() && !check_linger(lgn)) {
             print_dbg("srv: stop");
             if (lgn.srv_pid != -1) {
                 print_dbg("srv: term");
@@ -585,8 +588,8 @@ static bool drop_login(login &lgn) {
         }
     }
     /* this should never happen unless we have a bug */
-    if (!lgn.conns.empty()) {
-        print_err("turnstiled: conns not empty, it should be");
+    if (!lgn.sessions.empty()) {
+        print_err("turnstiled: sessions not empty, it should be");
         /* unrecoverable */
         return false;
     }
@@ -681,8 +684,8 @@ static bool srv_reaper(pid_t pid) {
             /* reaping service startup jobs */
             print_dbg("srv: ready notification");
             unsigned int msg = MSG_ENCODE_AUX(cdata->export_dbus, MSG_OK_DONE);
-            for (auto c: lgn.conns) {
-                if (send(c, &msg, sizeof(msg), 0) < 0) {
+            for (auto &sess: lgn.sessions) {
+                if (send(sess.fd, &msg, sizeof(msg), 0) < 0) {
                     print_err("conn: send failed (%s)", strerror(errno));
                 }
             }
