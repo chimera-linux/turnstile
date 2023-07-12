@@ -174,7 +174,7 @@ static bool open_session(
                     }
                     /* alloc tne buffer */
                     if (rlen) {
-                        orbuf = static_cast<char *>(malloc(
+                        orbuf = static_cast<char *>(std::malloc(
                             rlen + dpfx + dsfx + 1
                         ));
                         if (!orbuf) {
