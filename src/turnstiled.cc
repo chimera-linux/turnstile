@@ -18,6 +18,7 @@
 #include <climits>
 #include <cctype>
 #include <algorithm>
+#include <new>
 
 #include <pwd.h>
 #include <poll.h>
@@ -25,18 +26,12 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/un.h>
-#if defined(__sun) || defined(sun)
-# if __has_include(<ucred.h>)
-#  include <ucred.h>
-# else
-#  include <sys/ucred.h>
-# endif
-#endif
 
 #include "turnstiled.hh"
+#include "utils.hh"
 
 #ifndef CONF_PATH
 #error "No CONF_PATH is defined"
@@ -116,6 +111,11 @@ static std::size_t npipes = 0;
 static int ctl_sock;
 /* signal self-pipe */
 static int sigpipe[2] = {-1, -1};
+/* session counter, each session gets a new number (i.e. numbers never
+ * get reused even if the session of that number dies); session numbers
+ * are unique even across logins
+ */
+static unsigned long idbase = 0;
 
 /* start the service manager instance for a login */
 static bool srv_start(login &lgn) {
@@ -223,66 +223,16 @@ static bool srv_start(login &lgn) {
     return true;
 }
 
-static login *get_login(int fd) {
+static session *get_session(int fd) {
     for (auto &lgn: logins) {
         for (auto &sess: lgn.sessions) {
             if (fd == sess.fd) {
-                return &lgn;
+                return &sess;
             }
         }
     }
-    print_dbg("msg: no login for %d", fd);
+    print_dbg("msg: no session for %d", fd);
     return nullptr;
-}
-
-static bool get_peer_euid(int fd, unsigned int &euid) {
-#if defined(SO_PEERCRED)
-    /* Linux or OpenBSD */
-#ifdef __OpenBSD
-    struct sockpeercred cr;
-#else
-    struct ucred cr;
-#endif
-    socklen_t crl = sizeof(cr);
-    if (!getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &crl) && (crl == sizeof(cr))) {
-        euid = cr.uid;
-        return true;
-    }
-#elif defined(LOCAL_PEERCRED)
-    /* FreeBSD */
-    struct xucred cr;
-    socklen_t crl = sizeof(cr);
-    if (
-        !getsockopt(fd, 0, LOCAL_PEERCRED, &cr, &crl) && (crl == sizeof(cr)) &&
-        (cr.cr_version == XUCRED_VERSION)
-    ) {
-        euid = cr.cr_uid;
-        return true;
-    }
-#elif defined(LOCAL_PEEREID)
-    /* NetBSD */
-    struct unpcbid cr;
-    socklen_t crl = sizeof(cr);
-    if (!getsockopt(fd, 0, LOCAL_PEEREID, &cr, &crl) && (crl == sizeof(cr))) {
-        euid = cr.unp_euid;
-        return true;
-    }
-#elif defined(__sun) || defined(sun)
-    /* Solaris */
-    ucred_t *cr = nullptr;
-    if (getpeerucred(fd, &cr) < 0) {
-        return false;
-    }
-    auto uid = ucred_geteuid(cr);
-    ucred_free(cr);
-    if (uid != uid_t(-1)) {
-        euid = uid;
-        return true;
-    }
-#else
-#error Please implement credentials checking for your OS.
-#endif
-    return false;
 }
 
 static login *login_populate(unsigned int uid) {
@@ -330,15 +280,16 @@ static login *login_populate(unsigned int uid) {
     return lgn;
 }
 
-static login *handle_session_new(int fd, unsigned int uid) {
+static session *handle_session_new(int fd, unsigned int uid) {
     /* check for credential mismatch */
-    unsigned int puid = UINT_MAX;
-    if (!get_peer_euid(fd, puid)) {
+    uid_t puid;
+    pid_t lpid;
+    if (!get_peer_cred(fd, &puid, nullptr, &lpid)) {
         print_dbg("msg: could not get peer credentials");
         return nullptr;
     }
-    if ((puid != 0) && (uid != puid)) {
-        print_dbg("msg: uid mismatch (peer: %u, got: %u)", puid, uid);
+    if (puid != 0) {
+        print_dbg("msg: can't set up session (permission denied)");
         return nullptr;
     }
     /* acknowledge the login */
@@ -358,8 +309,77 @@ static login *handle_session_new(int fd, unsigned int uid) {
     /* create a new session */
     auto &sess = lgn->sessions.emplace_back();
     sess.fd = fd;
+    sess.id = ++idbase;
+    sess.lgn = lgn;
+    sess.lpid = lpid;
+    /* initial message */
+    sess.needed = 1;
     /* reply */
-    return lgn;
+    return &sess;
+}
+
+static bool write_sdata(session const &sess) {
+    char sessname[64], tmpname[64];
+    std::snprintf(tmpname, sizeof(tmpname), "session.%lu.tmp", sess.id);
+    std::snprintf(sessname, sizeof(sessname), "session.%lu", sess.id);
+    auto &lgn = *sess.lgn;
+    int omask = umask(0);
+    int sessfd = openat(lgn.dirfd, tmpname, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (sessfd < 0) {
+        print_err("msg: session tmpfile failed (%s)", strerror(errno));
+        umask(omask);
+        return false;
+    }
+    umask(omask);
+    auto *sessf = fdopen(sessfd, "w");
+    if (!sessf) {
+        print_err("msg: session fdopen failed (%s)", strerror(errno));
+        close(sessfd);
+        return false;
+    }
+    /* now write all the session data */
+    std::fprintf(
+        sessf,
+        "UID=%u\n"
+        "USER=%s\n",
+        lgn.uid,
+        lgn.username.data()
+    );
+    if (sess.vtnr) {
+        std::fprintf(sessf, "IS_DISPLAY=1\n");
+    }
+    std::fprintf(sessf, "REMOTE=%d\n", int(sess.remote));
+    std::fprintf(sessf, "TYPE=%s\n", sess.s_type.data());
+    std::fprintf(sessf, "ORIGINAL_TYPE=%s\n", sess.s_type.data());
+    std::fprintf(sessf, "CLASS=%s\n", sess.s_class.data());
+    if (!sess.s_seat.empty()) {
+        std::fprintf(sessf, "SEAT=%s\n", sess.s_seat.data());
+    }
+    if (!sess.s_tty.empty()) {
+        std::fprintf(sessf, "TTY=%s\n", sess.s_tty.data());
+    }
+    if (!sess.s_service.empty()) {
+        std::fprintf(sessf, "SERVICE=%s\n", sess.s_service.data());
+    }
+    if (sess.vtnr) {
+        std::fprintf(sessf, "VTNR=%lu\n", sess.vtnr);
+    }
+    std::fprintf(sessf, "LEADER=%ld\n", long(sess.lpid));
+    /* done writing */
+    std::fclose(sessf);
+    /* now rename to real file */
+    if (renameat(lgn.dirfd, tmpname, lgn.dirfd, sessname) < 0) {
+        print_err("msg: session renameat failed (%s)", strerror(errno));
+        unlinkat(lgn.dirfd, tmpname, 0);
+        return false;
+    }
+    return true;
+}
+
+static void drop_sdata(session const &sess) {
+    char sessname[64];
+    std::snprintf(sessname, sizeof(sessname), "session.%lu", sess.id);
+    unlinkat(sess.lgn->dirfd, sessname, 0);
 }
 
 static bool sock_block(int fd, short events) {
@@ -388,24 +408,8 @@ static bool sock_block(int fd, short events) {
     return true;
 }
 
-static bool recv_full(int fd, void *buf, size_t len) {
-    auto *cbuf = static_cast<unsigned char *>(buf);
-    while (len) {
-        auto ret = recv(fd, cbuf, len, 0);
-        if (ret < 0) {
-            if (sock_block(fd, POLLIN)) {
-                continue;
-            }
-            return false;
-        }
-        cbuf += ret;
-        len -= ret;
-    }
-    return true;
-}
-
-static bool send_full(int fd, void *buf, size_t len) {
-    auto *cbuf = static_cast<unsigned char *>(buf);
+static bool send_full(int fd, void const *buf, size_t len) {
+    auto *cbuf = static_cast<unsigned char const *>(buf);
     while (len) {
         auto ret = send(fd, cbuf, len, 0);
         if (ret < 0) {
@@ -428,77 +432,277 @@ static bool send_msg(int fd, unsigned char msg) {
     return (msg != MSG_ERR);
 }
 
-static bool handle_read(int fd) {
-    unsigned char msg;
-    if (!recv_full(fd, &msg, sizeof(msg))) {
+static bool recv_val(int fd, void *buf, size_t sz) {
+    auto ret = recv(fd, buf, sz, 0);
+    if (ret < 0) {
+        if (errno == EINTR) {
+            return recv_val(fd, buf, sz);
+        }
         print_err("msg: recv failed (%s)", strerror(errno));
+    }
+    if (size_t(ret) != sz) {
+        print_err("msg: partial recv despite peek");
         return false;
     }
-    print_dbg("msg: read %u (%d)", msg, fd);
-    switch (msg) {
-        case MSG_START: {
-            unsigned int uid;
-            if (!recv_full(fd, &uid, sizeof(uid))) {
-                print_err("msg: recv failed (%s)", strerror(errno));
+    return true;
+}
+
+static bool recv_str(
+    session &sess, std::string &outs, unsigned int minlen, unsigned int maxlen
+) {
+    char buf[1024];
+    if (!sess.str_left) {
+        print_dbg("msg: str start");
+        outs.clear();
+        size_t slen;
+        if (!recv_val(sess.fd, &slen, sizeof(slen))) {
+            return false;
+        }
+        if ((slen < minlen) || (slen > maxlen)) {
+            print_err("msg: invalid string length");
+            return false;
+        }
+        sess.str_left = slen;
+        /* we are awaiting string, which may come in arbitrary chunks */
+        sess.needed = 0;
+        return true;
+    }
+    auto left = sess.str_left;
+    if (left > sizeof(buf)) {
+        left = sizeof(buf);
+    }
+    auto ret = recv(sess.fd, buf, left, 0);
+    if (ret < 0) {
+        if (errno == EINTR) {
+            return recv_str(sess, outs, minlen, maxlen);
+        } else if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
+            return true;
+        }
+    }
+    outs.append(buf, ret);
+    sess.str_left -= ret;
+    return true;
+}
+
+static bool handle_read(int fd) {
+    int sess_needed;
+    /* try get existing session */
+    auto *sess = get_session(fd);
+    /* no session: initialize one, expect initial data */
+    if (!sess) {
+        sess_needed = sizeof(unsigned int) + sizeof(unsigned char);
+    } else {
+        sess_needed = sess->needed;
+    }
+    /* check if we have enough data, otherwise re-poll */
+    if (sess_needed) {
+        int avail;
+        auto ret = ioctl(fd, FIONREAD, &avail);
+        if (ret < 0) {
+            print_err("msg: ioctl failed (%s)", strerror(errno));
+            return false;
+        }
+        if (avail < sess_needed) {
+            return true;
+        }
+    }
+    /* must be an initial message */
+    if (!sess) {
+        unsigned char msg;
+        unsigned int uid;
+        if (!recv_val(fd, &msg, sizeof(msg))) {
+            return false;
+        }
+        if (!recv_val(fd, &uid, sizeof(uid))) {
+            return false;
+        }
+        if (msg != MSG_START) {
+            /* unexpected message */
+            print_err("msg: expected MSG_START, got %u", msg);
+            return false;
+        }
+        sess = handle_session_new(fd, uid);
+        if (!sess) {
+            return send_msg(fd, MSG_ERR);
+        }
+        /* expect vtnr */
+        sess->needed = sizeof(unsigned long);
+        return true;
+    }
+    /* handle the right section of handshake */
+    if (sess->handshake) {
+        if (sess->pend_vtnr) {
+            print_dbg("msg: get session vtnr");
+            if (!recv_val(fd, &sess->vtnr, sizeof(sess->vtnr))) {
+                return false;
             }
-            /* new login, register it */
-            auto *lgn = handle_session_new(fd, uid);
-            if (!lgn) {
-                return send_msg(fd, MSG_ERR);
+            /* remote */
+            sess->needed = sizeof(bool);
+            sess->pend_vtnr = 0;
+            return true;
+        }
+        if (sess->pend_remote) {
+            print_dbg("msg: get remote");
+            if (!recv_val(fd, &sess->remote, sizeof(sess->remote))) {
+                return false;
             }
-            if (!lgn->srv_wait) {
-                /* already started, reply with ok */
-                print_dbg("msg: done");
-                if (!send_msg(fd, MSG_OK_DONE)) {
-                    return false;
-                }
-                bool cdbus = cdata->export_dbus;
-                return send_full(fd, &cdbus, sizeof(cdbus));
-            } else {
-                if (lgn->srv_pid == -1) {
-                    if (lgn->term_pid != -1) {
-                        /* still waiting for old service manager to die */
-                        print_dbg("msg: still waiting for old srv term");
-                        lgn->srv_pending = true;
-                    } else {
-                        print_dbg("msg: start service manager");
-                        if (!srv_start(*lgn)) {
-                            return false;
-                        }
+            /* service str */
+            sess->needed = sizeof(size_t);
+            sess->pend_remote = 0;
+            return true;
+        }
+#define GET_STR(type, min, max, code) \
+        if (sess->pend_##type) { \
+            print_dbg("msg: get " #type); \
+            if (!recv_str(*sess, sess->s_##type, min, max)) { \
+                return false; \
+            } \
+            if (!sess->str_left) { \
+                sess->pend_##type = false; \
+                /* we are waiting for length of next string */ \
+                sess->needed = sizeof(size_t); \
+                print_dbg("msg: got \"%s\"", sess->s_##type.data()); \
+                code \
+            } \
+            return true; \
+        }
+        GET_STR(service, 1, 64,)
+        GET_STR(type, 1, 16,)
+        GET_STR(class, 1, 16,)
+        GET_STR(desktop, 0, 64,)
+        GET_STR(seat, 0, 32,)
+        GET_STR(tty, 0, 16,)
+        GET_STR(display, 0, 16,)
+        GET_STR(ruser, 0, 256,)
+        GET_STR(rhost, 0, 256, goto handshake_finish;)
+#undef GET_STR
+        /* should be unreachable */
+        print_dbg("msg: unreachable handshake");
+        return false;
+    }
+handshake_finish:
+    if (sess->handshake) {
+        /* from this point the protocol is byte-sized messages only */
+        sess->needed = sizeof(unsigned char);
+        sess->handshake = 0;
+        /* finish startup */
+        if (!sess->lgn->srv_wait) {
+            /* already started, reply with ok */
+            print_dbg("msg: done");
+            /* establish internal session file */
+            if (!write_sdata(*sess)) {
+                return false;
+            }
+            if (!send_msg(fd, MSG_OK_DONE)) {
+                return false;
+            }
+        } else {
+            if (sess->lgn->srv_pid == -1) {
+                if (sess->lgn->term_pid != -1) {
+                    /* still waiting for old service manager to die */
+                    print_dbg("msg: still waiting for old srv term");
+                    sess->lgn->srv_pending = true;
+                } else {
+                    print_dbg("msg: start service manager");
+                    if (!srv_start(*sess->lgn)) {
+                        return false;
+                    }
+                    /* establish internal session file */
+                    if (!write_sdata(*sess)) {
+                        return false;
                     }
                 }
-                print_dbg("msg: wait");
-                return send_msg(fd, MSG_OK_WAIT);
             }
-            break;
+            print_dbg("msg: wait");
+            return send_msg(fd, MSG_OK_WAIT);
         }
-        case MSG_REQ_DATA: {
-            auto *lgn = get_login(fd);
-            if (!lgn) {
-                return send_msg(fd, MSG_ERR);
-            }
-            /* data message */
-            if (!send_msg(fd, MSG_DATA)) {
-                return false;
-            }
-            /* rundir length */
-            unsigned short rlen = lgn->rundir.size();
-            if (!send_full(fd, &rlen, sizeof(rlen))) {
-                return false;
-            }
-            /* rundir set */
-            bool rset = cdata->manage_rdir;
-            if (!send_full(fd, &rset, sizeof(rset))) {
-                return false;
-            }
-            /* rundir string */
-            return send_full(fd, lgn->rundir.data(), rlen);
-        }
-        default:
-            break;
+        return true;
     }
-    /* unexpected message, terminate the connection */
-    return false;
+    /* get msg */
+    unsigned char msg;
+    if (!recv_val(fd, &msg, sizeof(msg))) {
+        return false;
+    }
+    if (msg != MSG_REQ_ENV) {
+        print_err("msg: invalid message %u (%d)", msg, fd);
+        return false;
+    }
+    print_dbg("msg: session environment request");
+    /* data message */
+    if (!send_msg(fd, MSG_ENV)) {
+        return false;
+    }
+    unsigned int rlen = sess->lgn->rundir.size();
+    if (!rlen) {
+        /* no rundir means no env, send a zero */
+        print_dbg("msg: no rundir, not sending env");
+        return send_full(fd, &rlen, sizeof(rlen));
+    }
+    /* we have a rundir, compute an environment block */
+    unsigned int elen = 0;
+    bool got_bus = false;
+    /* declare some constants we need */
+    char const dpfx[] = "DBUS_SESSION_BUS_ADDRESS=unix:path=";
+    char const rpfx[] = "XDG_RUNTIME_DIR=";
+    char const dsfx[] = "/bus";
+    /* we can optionally export session bus address */
+    if (cdata->export_dbus) {
+        /* check if the session bus socket exists */
+        struct stat sbuf;
+        /* first get the rundir descriptor */
+        int rdirfd = open(sess->lgn->rundir.data(), O_RDONLY | O_NOFOLLOW);
+        if (rdirfd >= 0) {
+            if (
+                !fstatat(rdirfd, "bus", &sbuf, AT_SYMLINK_NOFOLLOW) &&
+                S_ISSOCK(sbuf.st_mode)
+            ) {
+                /* the bus socket exists */
+                got_bus = true;
+                /* includes null terminator */
+                elen += sizeof(dpfx) + sizeof(dsfx) - 1;
+                elen += rlen;
+            }
+            close(rdirfd);
+        }
+    }
+    /* we can also export rundir if we're managing it */
+    if (cdata->manage_rdir) {
+        /* includes null terminator */
+        elen += sizeof("XDG_RUNTIME_DIR=");
+        elen += rlen;
+    }
+    /* send the total length */
+    print_dbg("msg: send len: %u", elen);
+    if (!send_full(fd, &elen, sizeof(elen))) {
+        return false;
+    }
+    auto &rdir = sess->lgn->rundir;
+    /* now send rundir if we have it */
+    if (cdata->manage_rdir) {
+        if (!send_full(fd, rpfx, sizeof(rpfx) - 1)) {
+            return false;
+        }
+        /* includes null terminator */
+        if (!send_full(fd, rdir.data(), rdir.size() + 1)) {
+            return false;
+        }
+    }
+    /* now send bus if we have it */
+    if (got_bus) {
+        if (!send_full(fd, dpfx, sizeof(dpfx) - 1)) {
+            return false;
+        }
+        if (!send_full(fd, rdir.data(), rdir.size())) {
+            return false;
+        }
+        /* includes null terminator */
+        if (!send_full(fd, dsfx, sizeof(dsfx))) {
+            return false;
+        }
+    }
+    print_dbg("msg: sent env, done");
+    /* we've sent all */
+    return true;
 }
 
 struct sig_data {
@@ -546,6 +750,7 @@ static bool conn_term_login(login &lgn, int conn) {
             continue;
         }
         print_dbg("conn: close %d for login %u", conn, lgn.uid);
+        drop_sdata(*cit);
         lgn.sessions.erase(cit);
         /* empty now; shut down login */
         if (lgn.sessions.empty() && !check_linger(lgn)) {
@@ -586,6 +791,16 @@ static bool sock_new(char const *path, int &sock, mode_t mode) {
     if (sock < 0) {
         print_err("socket failed (%s)", strerror(errno));
         return false;
+    }
+
+    /* set buffers */
+    int bufsz = 4096;
+
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz)) < 0) {
+        print_err("setssockopt failed (%s)", strerror(errno));
+    }
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz)) < 0) {
+        print_err("setssockopt failed (%s)", strerror(errno));
     }
 
     print_dbg("socket: created %d for %s", sock, path);
@@ -740,11 +955,8 @@ static bool srv_reaper(pid_t pid) {
         } else if (pid == lgn.start_pid) {
             /* reaping service startup jobs */
             print_dbg("srv: ready notification");
-            bool edbus = cdata->export_dbus;
             for (auto &sess: lgn.sessions) {
-                if (send_msg(sess.fd, MSG_OK_DONE)) {
-                    send_full(sess.fd, &edbus, sizeof(edbus));
-                }
+                send_msg(sess.fd, MSG_OK_DONE);
             }
             /* disarm an associated timer */
             print_dbg("srv: disarm timer");
@@ -854,6 +1066,7 @@ static bool fd_handle_conn(std::size_t i) {
         return true;
     }
     if (fds[i].revents & POLLHUP) {
+        print_dbg("conn: hup %d", fds[i].fd);
         conn_term(fds[i].fd);
         fds[i].fd = -1;
         fds[i].revents = 0;
@@ -861,14 +1074,21 @@ static bool fd_handle_conn(std::size_t i) {
     }
     if (fds[i].revents & POLLIN) {
         /* input on connection */
-        if (!handle_read(fds[i].fd)) {
-            print_err("read: handler failed (terminate connection)");
-            conn_term(fds[i].fd);
-            fds[i].fd = -1;
-            fds[i].revents = 0;
-            return true;
+        try {
+            print_dbg("conn: read %d", fds[i].fd);
+            if (!handle_read(fds[i].fd)) {
+                goto read_fail;
+            }
+        } catch (std::bad_alloc const &) {
+            goto read_fail;
         }
     }
+    return true;
+read_fail:
+    print_err("read: handler failed (terminate connection)");
+    conn_term(fds[i].fd);
+    fds[i].fd = -1;
+    fds[i].revents = 0;
     return true;
 }
 
@@ -1024,6 +1244,7 @@ int main(int argc, char **argv) {
             goto do_compact;
         }
         /* check signal fd */
+        print_dbg("turnstiled: check signal");
         if (fds[0].revents == POLLIN) {
             sig_data sd;
             if (read(fds[0].fd, &sd, sizeof(sd)) != sizeof(sd)) {
@@ -1049,6 +1270,7 @@ int main(int argc, char **argv) {
             }
         }
 signal_done:
+        print_dbg("turnstiled: check term");
         if (term) {
             /* check if there are any more live processes */
             bool die_now = true;
@@ -1067,14 +1289,21 @@ signal_done:
             continue;
         }
         /* check incoming connections on control socket */
+        print_dbg("turnstiled: check incoming");
         sock_handle_conn();
         /* check on pipes; npipes may be changed by fd_handle_pipe */
         curpipes = npipes;
+        print_dbg("turnstiled: check pipes");
         for (i = 2; i < (curpipes + 2); ++i) {
-            if (!fd_handle_pipe(i)) {
+            try {
+                if (!fd_handle_pipe(i)) {
+                    return 1;
+                }
+            } catch (std::bad_alloc const &) {
                 return 1;
             }
         }
+        print_dbg("turnstiled: check conns");
         /* check on connections */
         for (; i < fds.size(); ++i) {
             if (!fd_handle_conn(i)) {
@@ -1082,6 +1311,7 @@ signal_done:
             }
         }
 do_compact:
+        print_dbg("turnstiled: compact");
         /* compact the descriptor list */
         for (auto it = fds.begin(); it != fds.end();) {
             if (it->fd == -1) {

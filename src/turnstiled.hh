@@ -19,9 +19,63 @@
 
 #include "protocol.hh"
 
+struct login;
+
 /* represents a single session within a login */
 struct session {
+    session():
+        str_left{0},
+        handshake{1},
+        pend_vtnr{1},
+        pend_remote{1},
+        pend_service{1},
+        pend_type{1},
+        pend_class{1},
+        pend_desktop{1},
+        pend_seat{1},
+        pend_tty{1},
+        pend_display{1},
+        pend_ruser{1},
+        pend_rhost{1}
+    {}
+    /* data strings */
+    std::string s_service{};
+    std::string s_type{};
+    std::string s_class{};
+    std::string s_desktop{};
+    std::string s_seat{};
+    std::string s_tty{};
+    std::string s_display{};
+    std::string s_ruser{};
+    std::string s_rhost{};
+    /* the login the session belongs to */
+    login *lgn;
+    /* session id */
+    unsigned long id;
+    /* the session vt number */
+    unsigned long vtnr;
+    /* pid of the login process */
+    pid_t lpid;
+    /* requested amount of data before we can proceed */
+    int needed;
+    /* whether we're remote */
+    bool remote;
+    /* the connection descriptor */
     int fd;
+    /* stage */
+    unsigned int str_left: 16;
+    unsigned int handshake: 1;
+    unsigned int pend_vtnr: 1;
+    unsigned int pend_remote: 1;
+    unsigned int pend_service: 1;
+    unsigned int pend_type: 1;
+    unsigned int pend_class: 1;
+    unsigned int pend_desktop: 1;
+    unsigned int pend_seat: 1;
+    unsigned int pend_tty: 1;
+    unsigned int pend_display: 1;
+    unsigned int pend_ruser: 1;
+    unsigned int pend_rhost: 1;
 };
 
 /* represents a collection of sessions for a specific user id */

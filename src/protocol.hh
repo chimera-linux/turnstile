@@ -34,26 +34,23 @@
  * CLIENT: sends MSG_START, followed by uid (unsigned int), and enters a
  *         message loop (state machine)
  * SERVER: if service manager for the user is already running, responds
- *         with MSG_OK_DONE followed by a bool specifying whether the
- *         session bus address should be exported; else initiates startup
- *         and responds with MSG_OK_WAIT
+ *         with MSG_OK_DONE; else initiates startup and responds MSG_OK_WAIT
  * CLIENT: if MSG_OK_WAIT was received, waits for another message
- * SERVER: once service manager starts, MSG_OK_DONE is sent (followed by
- *         the bool)
- * CLIENT: sends MSG_REQ_DATA
- * SERVER: responds with MSG_DATA, followed by rundir length (uint16_t),
- *         a bool specifying whether rundir should be set, and the rundir
- *         string itself
- * CLIENT: finishes startup, exports XDG_RUNTIME_DIR if needed as well
- *         as DBUS_SESSION_BUS_ADDRESS, and everything is done
+ * SERVER: once service manager starts, MSG_OK_DONE is sent
+ * CLIENT: sends MSG_REQ_ENV
+ * SERVER: responds with MSG_ENV, followed by length of the environment
+ *         block (unsigned int) followed by the environment data, which
+ *         is a sequence of null-terminated strings
+ * CLIENT: finishes startup, exports each variable in the received env
+ *         block and finalizes session
  */
 
 /* byte-sized message identifiers */
 enum {
     MSG_OK_WAIT = 0x1, /* login, wait */
     MSG_OK_DONE, /* ready, proceed */
-    MSG_REQ_DATA, /* session data request */
-    MSG_DATA,
+    MSG_REQ_ENV, /* session environment request */
+    MSG_ENV,
     MSG_START,
     /* sent by server on errors */
     MSG_ERR,

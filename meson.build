@@ -4,7 +4,6 @@ project(
     version: '0.1.6',
     default_options: [
         'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
-        'cpp_eh=none', 'cpp_rtti=false',
     ],
     license: 'BSD-2-Clause'
 )
@@ -56,6 +55,7 @@ daemon_sources = [
     'src/fs_utils.cc',
     'src/cfg_utils.cc',
     'src/exec_utils.cc',
+    'src/utils.cc',
 ]
 
 daemon = executable(
@@ -77,7 +77,7 @@ if pam_moddir == ''
 endif
 
 pam_mod = shared_module(
-    'pam_turnstile', 'src/pam_turnstile.cc',
+    'pam_turnstile', ['src/pam_turnstile.cc', 'src/utils.cc'],
     include_directories: extra_inc,
     install: true,
     install_dir: pam_moddir,
