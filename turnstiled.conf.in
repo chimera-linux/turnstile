@@ -99,3 +99,12 @@ export_dbus_address = yes
 # If set to 0, the timeout is disabled.
 #
 login_timeout = 60
+
+# When using a backend that is not 'none', this controls
+# whether to run the user session manager for the root
+# user. The login session will still be tracked regardless
+# of the setting,
+#
+# Valid values are 'yes' and 'no'.
+#
+root_session = no

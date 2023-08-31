@@ -95,3 +95,10 @@ accept more values.
 	part of the initial startup process take longer than this, the service
 	manager	instance is terminated and all connections to the session are
 	closed.
+
+*root\_sesion* (boolean: _no_)
+	Whether to run a user service manager for root logins. By default, the
+	root login is tracked but service manager is not run for it. If you
+	override that, the root user is treated like any other user and will
+	have its own user services. This may result in various gotchas, such
+	root having a session bus, and so on.

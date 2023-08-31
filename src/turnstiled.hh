@@ -144,7 +144,7 @@ void cfg_expand_rundir(
 );
 
 /* service manager utilities */
-void srv_child(login &sess, char const *backend, bool d);
+void srv_child(login &sess, char const *backend);
 bool srv_boot(login &sess, char const *backend);
 
 struct cfg_data {
@@ -156,6 +156,7 @@ struct cfg_data {
     bool export_dbus = true;
     bool linger = false;
     bool linger_never = false;
+    bool root_session = false;
     std::string backend = "dinit";
     std::string rdir_path = RUN_PATH "/user/%u";
 };

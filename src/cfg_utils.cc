@@ -87,6 +87,8 @@ void cfg_read(char const *cfgpath) {
             read_bool("manage_rundir", ass, cdata->manage_rdir);
         } else if (!std::strcmp(bufp, "export_dbus_address")) {
             read_bool("export_dbus_address", ass, cdata->export_dbus);
+        } else if (!std::strcmp(bufp, "root_session")) {
+            read_bool("root_session", ass, cdata->root_session);
         } else if (!std::strcmp(bufp, "linger")) {
             if (!std::strcmp(ass, "maybe")) {
                 cdata->linger = false;

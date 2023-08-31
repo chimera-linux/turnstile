@@ -134,8 +134,11 @@ static bool srv_start(login &lgn) {
             return false;
         }
     }
+    bool has_backend = !cdata->disable && (
+        (lgn.uid != 0) || cdata->root_session
+    );
     /* set up login dir */
-    if (!cdata->disable) {
+    if (has_backend) {
         print_dbg("srv: create login dir for %u", lgn.uid);
         /* make the directory itself */
         lgn.dirfd = dir_make_at(userv_dirfd, uidbuf, 0700);
@@ -205,7 +208,7 @@ static bool srv_start(login &lgn) {
         close(sigpipe[0]);
         close(sigpipe[1]);
         /* and run the login */
-        srv_child(lgn, cdata->backend.data(), cdata->disable);
+        srv_child(lgn, has_backend ? cdata->backend.data() : nullptr);
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));

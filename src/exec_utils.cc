@@ -165,7 +165,7 @@ static void sig_handler(int sign) {
 
 static void fork_and_wait(
     pam_handle_t *pamh, char const *backend,
-    unsigned int uid, unsigned int gid, bool dummy
+    unsigned int uid, unsigned int gid
 ) {
     int pst, status;
     int term_count = 0;
@@ -225,7 +225,7 @@ static void fork_and_wait(
             char buf[32];
             pid_t outp;
             int st;
-            if ((term_count++ > 1) || dummy) {
+            if ((term_count++ > 1) || !backend) {
                 /* hard kill */
                 kill(p, SIGKILL);
                 continue;
@@ -294,7 +294,7 @@ static void srv_dummy() {
     exit(0);
 }
 
-void srv_child(login &lgn, char const *backend, bool dummy) {
+void srv_child(login &lgn, char const *backend) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* create a new session */
@@ -302,7 +302,7 @@ void srv_child(login &lgn, char const *backend, bool dummy) {
         perror("srv: setsid failed");
     }
     /* begin pam session setup */
-    if (is_root && !dummy) {
+    if (is_root) {
         pamh = dpam_begin(lgn.username.data(), lgn.gid);
         if (!dpam_open(pamh)) {
             return;
@@ -311,12 +311,7 @@ void srv_child(login &lgn, char const *backend, bool dummy) {
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
-    fork_and_wait(pamh, backend, lgn.uid, lgn.gid, dummy);
-    /* dummy service manager if requested */
-    if (dummy) {
-        srv_dummy();
-        return;
-    }
+    fork_and_wait(pamh, backend, lgn.uid, lgn.gid);
     /* drop privs */
     if (is_root) {
         /* change identity */
@@ -328,6 +323,11 @@ void srv_child(login &lgn, char const *backend, bool dummy) {
             perror("srv: failed to set uid");
             return;
         }
+    }
+    /* dummy service manager if requested */
+    if (!backend) {
+        srv_dummy();
+        return;
     }
     /* change directory to home, fall back to / or error */
     if ((chdir(lgn.homedir.data()) < 0) || (chdir("/") < 0)) {
