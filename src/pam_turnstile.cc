@@ -168,14 +168,17 @@ static bool open_session(
         unsigned char state = 0;
 
         /* read an entire known-size buffer in one go */
-        auto read_full = [sock](void *buf, size_t len) -> bool {
+        auto recv_full = [sock](void *buf, size_t len) -> bool {
             auto *cbuf = static_cast<unsigned char *>(buf);
             while (len) {
-                auto n = read(*sock, cbuf, len);
+                auto n = recv(*sock, cbuf, len, 0);
                 if (n < 0) {
                     if (errno == EINTR) {
                         continue;
                     }
+                    return false;
+                } else if (n == 0) {
+                    /* eof; connection closed by peer */
                     return false;
                 }
                 cbuf += n;
@@ -185,7 +188,7 @@ static bool open_session(
         };
 
         for (;;) {
-            if (!read_full(&msg, sizeof(msg))) {
+            if (!recv_full(&msg, sizeof(msg))) {
                 goto err;
             }
             switch (state) {
@@ -216,7 +219,7 @@ static bool open_session(
                     /* after MSG_OK_DONE, we should receive the environment
                      * length first; if zero, it means we are completely done
                      */
-                    if (!read_full(&elen, sizeof(elen))) {
+                    if (!recv_full(&elen, sizeof(elen))) {
                         goto err;
                     }
                     /* alloc the buffer */
@@ -226,7 +229,7 @@ static bool open_session(
                             goto err;
                         }
                         /* followed by the environment block */
-                        if (!read_full(ebuf, elen)) {
+                        if (!recv_full(ebuf, elen)) {
                             goto err;
                         }
                     }
