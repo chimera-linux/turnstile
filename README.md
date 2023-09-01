@@ -96,16 +96,15 @@ Once the handshake is done and all the state is properly negotiated, the daemon
 will try to spawn the service manager for the user. It does so through the
 backend, which is tasked with the `run` action.
 
-The backend is invoked as a shell script, specifically as a login shell. This
-means that it starts with a clean environment, but has many of the common
-env vars (such as `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH` and others)
-freshly initialized, and the shell profile is also sourced. Additionally,
-it sets up a PAM session (but without authentication) in order to allow the
-service manager's environment to have default resource limits and other
-session matters equivalent to a real login. It may also be a good idea to
-put `pam_elogind` or `pam_systemd` in there in order to have `logind`
-recognize the `turnstile` user session as a session (which allows it to
-be tracked by things using it, e.g. `polkitd`).
+The backend is a little helper program that can be written in any language, it
+can e.g. be a shell script. It is started with a clean environment with many
+of the common environment variables, such as `HOME`, `USER`, `LOGNAME`, `SHELL`,
+`PATH` and others, freshly initialized. Additionally, it runs within a PAM
+session (without authentication), which persists for the lifetime of the
+login, so PAM environment, resource limits and so on are also set up.
+It may also be a good idea to put `pam_elogind` or `pam_systemd` in there in
+order to have `logind` recognize the `turnstile` user session as a session
+(which allows it to be tracked by things using it, e.g. `polkitd`).
 
 Note that if you use `pam_systemd` or `pam_elogind` in `turnstiled` PAM
 script to register it as a session, it will be treated as a session without

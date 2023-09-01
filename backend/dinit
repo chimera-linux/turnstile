@@ -1,10 +1,8 @@
 #!/bin/sh
 #
 # This is the turnstile dinit backend. It accepts the action as its first
-# argument, which is either "ready", "run", or "stop". In case of "run", it's
-# invoked directly through /bin/sh as if it was a login shell, and therefore
-# it has acccess to shell profile, and the shebang is functionally useless but
-# should be preserved as a convention. For "ready", it's a regular shell.
+# argument, which is either "ready", "run", or "stop". The backend can be
+# written in any language, in this case the shebang is used to run it.
 #
 # It also serves as an example of how to implement such backend.
 #

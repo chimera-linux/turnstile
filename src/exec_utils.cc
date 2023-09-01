@@ -22,7 +22,7 @@
 #  define PAM_CONV_FUNC openpam_ttyconv
 #endif
 
-static bool exec_script(
+static bool exec_backend(
     char const *backend, char const *arg, char const *data,
     unsigned int uid, unsigned int gid, pid_t &outpid
 ) {
@@ -54,20 +54,14 @@ static bool exec_script(
     }
     char buf[sizeof(LIBEXEC_PATH) + 128];
     std::snprintf(buf, sizeof(buf), LIBEXEC_PATH "/%s", backend);
-    /* invoke shebangless to match "run" */
-    char const *arg0 = _PATH_BSHELL;
-    char const *rsl = std::strrchr(arg0, '/');
-    if (rsl) {
-        arg0 = rsl + 1;
-    }
-    execl(_PATH_BSHELL, arg0, buf, arg, data, nullptr);
+    execl(buf, buf, arg, data, nullptr);
     exit(1);
     return true;
 }
 
 bool srv_boot(login &lgn, char const *backend) {
     print_dbg("srv: startup (ready)");
-    if (!exec_script(
+    if (!exec_backend(
         backend, "ready", lgn.srvstr.data(), lgn.uid, lgn.gid, lgn.start_pid
     )) {
         print_err("srv: fork failed (%s)", strerror(errno));
@@ -232,7 +226,7 @@ static void fork_and_wait(
             }
             std::snprintf(buf, sizeof(buf), "%zu", size_t(p));
             /* otherwise run the stop part */
-            if (!exec_script(backend, "stop", buf, uid, gid, outp)) {
+            if (!exec_backend(backend, "stop", buf, uid, gid, outp)) {
                 /* failed? */
                 perror("srv: stop exec failed, fall back to TERM");
                 kill(p, SIGTERM);
@@ -358,14 +352,7 @@ void srv_child(login &lgn, char const *backend) {
         execs.push_back('\0');
         ++nexec;
     };
-    /* argv starts here; we run a "login shell" */
-    char const *arg0 = _PATH_BSHELL;
-    char const *rsl = std::strrchr(arg0, '/');
-    if (rsl) {
-        arg0 = rsl + 1;
-    }
-    add_str("-", arg0);
-    /* path to run script */
+    /* path to run script, argv starts here */
     add_str(LIBEXEC_PATH, "/", backend);
     /* arg1: action */
     add_str("run");
@@ -452,5 +439,5 @@ void srv_child(login &lgn, char const *backend) {
     dpam_finalize(pamh);
     /* fire */
     auto *argv = const_cast<char **>(&argp[0]);
-    execve(_PATH_BSHELL, argv, argv + argc + 1);
+    execve(argv[0], argv, argv + argc + 1);
 }
