@@ -890,14 +890,14 @@ static bool sig_handle_term() {
 static bool sig_handle_alrm(void *data) {
     print_dbg("turnstiled: sigalrm");
     auto &lgn = *static_cast<login *>(data);
-    /* disarm the timer first, before it has a chance to fire */
-    print_dbg("turnstiled: drop timer");
-    if (!lgn.timer_armed) {
-        /* this should never happen, unrecoverable */
-        print_err("timer: handling alrm but timer not armed");
-        return false;
+    /* disarm the timer if armed */
+    if (lgn.timer_armed) {
+        print_dbg("turnstiled: drop timer");
+        lgn.disarm_timer();
+    } else {
+        print_dbg("turnstiled: spurious alarm, ignoring");
+        return true;
     }
-    lgn.disarm_timer();
     if (lgn.term_pid != -1) {
         if (lgn.kill_tried) {
             print_err(
