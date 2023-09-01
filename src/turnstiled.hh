@@ -144,7 +144,7 @@ void cfg_expand_rundir(
 );
 
 /* service manager utilities */
-void srv_child(login &sess, char const *backend);
+void srv_child(login &sess, char const *backend, bool make_rundir);
 bool srv_boot(login &sess, char const *backend);
 
 struct cfg_data {

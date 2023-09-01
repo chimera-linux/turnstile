@@ -124,16 +124,6 @@ static bool srv_start(login &lgn) {
     std::snprintf(uidbuf, sizeof(uidbuf), "%u", lgn.uid);
     /* mark as waiting */
     lgn.srv_wait = true;
-    /* make rundir if needed, we don't want to create that and login dir
-     * any earlier than here as here we are sure the previous instance has
-     * definitely terminated and stuff like login dirfd is actually clear
-     */
-    if (cdata->manage_rdir) {
-        print_dbg("srv: setup rundir for %u", lgn.uid);
-        if (!rundir_make(lgn.rundir.data(), lgn.uid, lgn.gid)) {
-            return false;
-        }
-    }
     bool has_backend = !cdata->disable && (
         (lgn.uid != 0) || cdata->root_session
     );
@@ -208,7 +198,11 @@ static bool srv_start(login &lgn) {
         close(sigpipe[0]);
         close(sigpipe[1]);
         /* and run the login */
-        srv_child(lgn, has_backend ? cdata->backend.data() : nullptr);
+        srv_child(
+            lgn,
+            has_backend ? cdata->backend.data() : nullptr,
+            cdata->manage_rdir
+        );
         exit(1);
     } else if (pid < 0) {
         print_err("srv: fork failed (%s)", strerror(errno));

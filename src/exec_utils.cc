@@ -106,6 +106,8 @@ static pam_handle_t *dpam_begin(char const *user, unsigned int gid) {
 static void sanitize_limits() {
     struct rlimit l{0, 0};
 
+    print_dbg("srv: sanitize rlimits");
+
     setrlimit(RLIMIT_NICE, &l);
     setrlimit(RLIMIT_RTPRIO, &l);
 
@@ -129,6 +131,8 @@ static bool dpam_open(pam_handle_t *pamh) {
     /* before opening session, do not rely on just PAM and sanitize a bit */
     sanitize_limits();
 
+    print_dbg("srv: open pam session");
+
     auto pst = pam_open_session(pamh, 0);
     if (pst != PAM_SUCCESS) {
         fprintf(stderr, "srv: pam_open_session: %s", pam_strerror(pamh, pst));
@@ -136,6 +140,7 @@ static bool dpam_open(pam_handle_t *pamh) {
         pam_end(pamh, pst);
         return false;
     }
+
     return true;
 }
 
@@ -288,7 +293,7 @@ static void srv_dummy() {
     exit(0);
 }
 
-void srv_child(login &lgn, char const *backend) {
+void srv_child(login &lgn, char const *backend, bool make_rundir) {
     pam_handle_t *pamh = nullptr;
     bool is_root = (getuid() == 0);
     /* create a new session */
@@ -297,11 +302,23 @@ void srv_child(login &lgn, char const *backend) {
     }
     /* begin pam session setup */
     if (is_root) {
+        print_dbg("srv: establish pam");
         pamh = dpam_begin(lgn.username.data(), lgn.gid);
         if (!dpam_open(pamh)) {
             return;
         }
     }
+    /* make rundir if needed, we want to make it as late as possible, ideally
+     * after the PAM session setup is already finalized (so that nothing gets
+     * the idea to nuke it), but before we fork and drop privileges
+     */
+    if (make_rundir) {
+        print_dbg("srv: setup rundir for %u", lgn.uid);
+        if (!rundir_make(lgn.rundir.data(), lgn.uid, lgn.gid)) {
+            return;
+        }
+    }
+    print_dbg("srv: forking for service manager exec");
     /* handle the parent/child logic here
      * if we're forking, only child makes it past this func
      */
