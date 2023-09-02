@@ -64,6 +64,11 @@ static int dirfd_users = -1;
 /* the file descriptor for the sessions directory */
 static int dirfd_sessions = -1;
 
+static bool write_udata(login const &lgn);
+static bool write_sdata(session const &sess);
+static void drop_udata(login const &lgn);
+static void drop_sdata(session const &sess);
+
 login::login() {
     timer_sev.sigev_notify = SIGEV_SIGNAL;
     timer_sev.sigev_signo = SIGALRM;
@@ -319,8 +324,68 @@ static session *handle_session_new(int fd, unsigned int uid) {
     return &sess;
 }
 
+static bool write_udata(login const &lgn) {
+    char uname[32], tmpname[32];
+    std::snprintf(tmpname, sizeof(tmpname), "%u.tmp", lgn.uid);
+    std::snprintf(uname, sizeof(uname), "%u", lgn.uid);
+    int omask = umask(0);
+    int lgnfd = openat(
+        dirfd_users, tmpname, O_CREAT | O_TRUNC | O_WRONLY, 0644
+    );
+    if (lgnfd < 0) {
+        print_err("msg: user tmpfile failed (%s)", strerror(errno));
+        umask(omask);
+        return false;
+    }
+    umask(omask);
+    auto *lgnf = fdopen(lgnfd, "w");
+    if (!lgnf) {
+        print_err("msg: user fdopen failed (%s)", strerror(errno));
+        close(lgnfd);
+        return false;
+    }
+    std::fprintf(
+        lgnf,
+        "NAME=%s\n"
+        "RUNTIME=%s\n",
+        lgn.username.data(),
+        lgn.rundir.data()
+    );
+    std::fprintf(lgnf, "SESSIONS=");
+    bool first = true;
+    for (auto &s: lgn.sessions) {
+        if (!first) {
+            std::fprintf(lgnf, " ");
+        }
+        std::fprintf(lgnf, "%lu", s.id);
+        first = false;
+    }
+    std::fprintf(lgnf, "\nSEATS=");
+    first = true;
+    for (auto &s: lgn.sessions) {
+        if (!first) {
+            std::fprintf(lgnf, " ");
+        }
+        if (s.s_seat.empty()) {
+            continue;
+        }
+        std::fprintf(lgnf, "%s", s.s_seat.data());
+        first = false;
+    }
+    std::fprintf(lgnf, "\n");
+    /* done writing */
+    std::fclose(lgnf);
+    /* now rename to real file */
+    if (renameat(dirfd_users, tmpname, dirfd_users, uname) < 0) {
+        print_err("msg: user renameat failed (%s)", strerror(errno));
+        unlinkat(dirfd_users, tmpname, 0);
+        return false;
+    }
+    return true;
+}
+
 static bool write_sdata(session const &sess) {
-    char sessname[64], tmpname[64];
+    char sessname[32], tmpname[32];
     std::snprintf(tmpname, sizeof(tmpname), "%lu.tmp", sess.id);
     std::snprintf(sessname, sizeof(sessname), "%lu", sess.id);
     auto &lgn = *sess.lgn;
@@ -376,7 +441,13 @@ static bool write_sdata(session const &sess) {
         unlinkat(dirfd_sessions, tmpname, 0);
         return false;
     }
-    return true;
+    return write_udata(lgn);
+}
+
+static void drop_udata(login const &lgn) {
+    char lgname[64];
+    std::snprintf(lgname, sizeof(lgname), "%u", lgn.uid);
+    unlinkat(dirfd_users, lgname, 0);
 }
 
 static void drop_sdata(session const &sess) {
@@ -755,6 +826,7 @@ static bool conn_term_login(login &lgn, int conn) {
         print_dbg("conn: close %d for login %u", conn, lgn.uid);
         drop_sdata(*cit);
         lgn.sessions.erase(cit);
+        write_udata(lgn);
         /* empty now; shut down login */
         if (lgn.sessions.empty() && !check_linger(lgn)) {
             print_dbg("srv: stop");
@@ -769,6 +841,7 @@ static bool conn_term_login(login &lgn, int conn) {
                  * wait because we need to remove the boot service first
                  */
                 lgn.remove_sdir();
+                drop_udata(lgn);
             }
             lgn.srv_pid = -1;
             lgn.start_pid = -1;
@@ -977,6 +1050,7 @@ static bool srv_reaper(pid_t pid) {
             }
             /* mark to repopulate if there are no sessions */
             if (lgn.sessions.empty()) {
+                drop_udata(lgn);
                 lgn.repopulate = true;
             }
             lgn.term_pid = -1;
