@@ -114,6 +114,8 @@ static std::vector<login> logins;
 
 /* file descriptors for poll */
 static std::vector<pollfd> fds;
+/* connections pending a session */
+static std::vector<int> pending_sess;
 /* number of pipes we are polling on */
 static std::size_t npipes = 0;
 /* control IPC socket */
@@ -562,9 +564,17 @@ static bool handle_read(int fd) {
     int sess_needed;
     /* try get existing session */
     auto *sess = get_session(fd);
+    int *pidx = nullptr;
     /* no session: initialize one, expect initial data */
     if (!sess) {
-        sess_needed = sizeof(unsigned int) + sizeof(unsigned char);
+        sess_needed = sizeof(unsigned char);
+        for (auto &pfd: pending_sess) {
+            if (pfd == fd) {
+                pidx = &pfd;
+                sess_needed = sizeof(unsigned int);
+                break;
+            }
+        }
     } else {
         sess_needed = sess->needed;
     }
@@ -581,18 +591,26 @@ static bool handle_read(int fd) {
         }
     }
     /* must be an initial message */
-    if (!sess) {
+    if (!sess && !pidx) {
         unsigned char msg;
-        unsigned int uid;
         if (!recv_val(fd, &msg, sizeof(msg))) {
-            return false;
-        }
-        if (!recv_val(fd, &uid, sizeof(uid))) {
             return false;
         }
         if (msg != MSG_START) {
             /* unexpected message */
             print_err("msg: expected MSG_START, got %u", msg);
+            return false;
+        }
+        pending_sess.push_back(fd);
+        return true;
+    }
+    /* pending a uid */
+    if (!sess) {
+        unsigned int uid;
+        /* drop from pending */
+        pending_sess.erase(pending_sess.begin() + (pidx - &pending_sess[0]));
+        /* now receive uid */
+        if (!recv_val(fd, &uid, sizeof(uid))) {
             return false;
         }
         sess = handle_session_new(fd, uid);
@@ -859,6 +877,14 @@ static void conn_term(int conn) {
             return;
         }
     }
+    /* wasn't a session, may be pending */
+    for (auto it = pending_sess.begin(); it != pending_sess.end(); ++it) {
+        if (*it == conn) {
+            pending_sess.erase(it);
+            break;
+        }
+    }
+    /* in any case, close */
     close(conn);
 }
 
@@ -1215,6 +1241,7 @@ int main(int argc, char **argv) {
     /* prealloc a bunch of space */
     logins.reserve(16);
     fds.reserve(64);
+    pending_sess.reserve(16);
 
     openlog("turnstiled", LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
