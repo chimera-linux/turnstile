@@ -58,7 +58,11 @@ static constexpr std::time_t kill_timeout = 60;
 cfg_data *cdata = nullptr;
 
 /* the file descriptor for the base directory */
-static int userv_dirfd = -1;
+static int dirfd_base = -1;
+/* the file descriptor for the users directory */
+static int dirfd_users = -1;
+/* the file descriptor for the sessions directory */
+static int dirfd_sessions = -1;
 
 login::login() {
     timer_sev.sigev_notify = SIGEV_SIGNAL;
@@ -70,7 +74,7 @@ login::login() {
 void login::remove_sdir() {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%u", this->uid);
-    unlinkat(userv_dirfd, buf, AT_REMOVEDIR);
+    unlinkat(dirfd_base, buf, AT_REMOVEDIR);
     /* just in case, we know this is a named pipe */
     unlinkat(this->dirfd, "ready", 0);
     dir_clear_contents(this->dirfd);
@@ -131,7 +135,7 @@ static bool srv_start(login &lgn) {
     if (has_backend) {
         print_dbg("srv: create login dir for %u", lgn.uid);
         /* make the directory itself */
-        lgn.dirfd = dir_make_at(userv_dirfd, uidbuf, 0700);
+        lgn.dirfd = dir_make_at(dirfd_base, uidbuf, 0700);
         if (lgn.dirfd < 0) {
             print_err(
                 "srv: failed to make login dir for %u (%s)",
@@ -141,7 +145,7 @@ static bool srv_start(login &lgn) {
         }
         /* ensure it's owned by the user */
         if (fchownat(
-            userv_dirfd, uidbuf, lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
+            dirfd_base, uidbuf, lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
         ) || fcntl(lgn.dirfd, F_SETFD, FD_CLOEXEC)) {
             print_err(
                 "srv: login dir setup failed for %u (%s)",
@@ -194,7 +198,7 @@ static bool srv_start(login &lgn) {
         sigaction(SIGINT, &sa, nullptr);
         /* close some descriptors, these can be reused */
         close(lgn.userpipe);
-        close(userv_dirfd);
+        close(dirfd_base);
         close(sigpipe[0]);
         close(sigpipe[1]);
         /* and run the login */
@@ -317,11 +321,13 @@ static session *handle_session_new(int fd, unsigned int uid) {
 
 static bool write_sdata(session const &sess) {
     char sessname[64], tmpname[64];
-    std::snprintf(tmpname, sizeof(tmpname), "session.%lu.tmp", sess.id);
-    std::snprintf(sessname, sizeof(sessname), "session.%lu", sess.id);
+    std::snprintf(tmpname, sizeof(tmpname), "%lu.tmp", sess.id);
+    std::snprintf(sessname, sizeof(sessname), "%lu", sess.id);
     auto &lgn = *sess.lgn;
     int omask = umask(0);
-    int sessfd = openat(lgn.dirfd, tmpname, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    int sessfd = openat(
+        dirfd_sessions, tmpname, O_CREAT | O_TRUNC | O_WRONLY, 0644
+    );
     if (sessfd < 0) {
         print_err("msg: session tmpfile failed (%s)", strerror(errno));
         umask(omask);
@@ -365,9 +371,9 @@ static bool write_sdata(session const &sess) {
     /* done writing */
     std::fclose(sessf);
     /* now rename to real file */
-    if (renameat(lgn.dirfd, tmpname, lgn.dirfd, sessname) < 0) {
+    if (renameat(dirfd_sessions, tmpname, dirfd_sessions, sessname) < 0) {
         print_err("msg: session renameat failed (%s)", strerror(errno));
-        unlinkat(lgn.dirfd, tmpname, 0);
+        unlinkat(dirfd_sessions, tmpname, 0);
         return false;
     }
     return true;
@@ -375,8 +381,8 @@ static bool write_sdata(session const &sess) {
 
 static void drop_sdata(session const &sess) {
     char sessname[64];
-    std::snprintf(sessname, sizeof(sessname), "session.%lu", sess.id);
-    unlinkat(sess.lgn->dirfd, sessname, 0);
+    std::snprintf(sessname, sizeof(sessname), "%lu", sess.id);
+    unlinkat(dirfd_sessions, sessname, 0);
 }
 
 static bool sock_block(int fd, short events) {
@@ -1173,15 +1179,31 @@ int main(int argc, char **argv) {
             print_err("turnstiled base path does not exist");
             return 1;
         }
-        userv_dirfd = dir_make_at(dfd, SOCK_DIR, 0755);
-        if (userv_dirfd < 0) {
+        dirfd_base = dir_make_at(dfd, SOCK_DIR, 0755);
+        if (dirfd_base < 0) {
             print_err("failed to create base directory (%s)", strerror(errno));
+            return 1;
+        }
+        dirfd_users = dir_make_at(dirfd_base, "users", 0755);
+        if (dirfd_users < 0) {
+            print_err("failed to create users directory (%s)", strerror(errno));
+            return 1;
+        }
+        dirfd_sessions = dir_make_at(dirfd_base, "sessions", 0755);
+        if (dirfd_sessions < 0) {
+            print_err(
+                "failed to create sessions directory (%s)", strerror(errno)
+            );
             return 1;
         }
         close(dfd);
     }
     /* ensure it is not accessible by service manager child processes */
-    if (fcntl(userv_dirfd, F_SETFD, FD_CLOEXEC)) {
+    if (
+        fcntl(dirfd_base, F_SETFD, FD_CLOEXEC) ||
+        fcntl(dirfd_users, F_SETFD, FD_CLOEXEC) ||
+        fcntl(dirfd_sessions, F_SETFD, FD_CLOEXEC)
+    ) {
         print_err("fcntl failed (%s)", strerror(errno));
         return 1;
     }
