@@ -135,51 +135,46 @@ static bool srv_start(login &lgn) {
     std::snprintf(uidbuf, sizeof(uidbuf), "%u", lgn.uid);
     /* mark as waiting */
     lgn.srv_wait = true;
-    bool has_backend = !cdata->disable && (
-        (lgn.uid != 0) || cdata->root_session
-    );
     /* set up login dir */
-    if (has_backend) {
-        print_dbg("srv: create login dir for %u", lgn.uid);
-        /* make the directory itself */
-        lgn.dirfd = dir_make_at(dirfd_base, uidbuf, 0700);
-        if (lgn.dirfd < 0) {
-            print_err(
-                "srv: failed to make login dir for %u (%s)",
-                lgn.uid, strerror(errno)
-            );
-            return false;
-        }
-        /* ensure it's owned by the user */
-        if (fchownat(
-            dirfd_base, uidbuf, lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
-        ) || fcntl(lgn.dirfd, F_SETFD, FD_CLOEXEC)) {
-            print_err(
-                "srv: login dir setup failed for %u (%s)",
-                lgn.uid, strerror(errno)
-            );
-            lgn.remove_sdir();
-            return false;
-        }
-        print_dbg("srv: create readiness pipe");
+    print_dbg("srv: create login dir for %u", lgn.uid);
+    /* make the directory itself */
+    lgn.dirfd = dir_make_at(dirfd_base, uidbuf, 0700);
+    if (lgn.dirfd < 0) {
+        print_err(
+            "srv: failed to make login dir for %u (%s)",
+            lgn.uid, strerror(errno)
+        );
+        return false;
+    }
+    /* ensure it's owned by the user */
+    if (fchownat(
+        dirfd_base, uidbuf, lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
+    ) || fcntl(lgn.dirfd, F_SETFD, FD_CLOEXEC)) {
+        print_err(
+            "srv: login dir setup failed for %u (%s)",
+            lgn.uid, strerror(errno)
+        );
+        lgn.remove_sdir();
+        return false;
+    }
+    print_dbg("srv: create readiness pipe");
+    unlinkat(lgn.dirfd, "ready", 0);
+    if (mkfifoat(lgn.dirfd, "ready", 0700) < 0) {
+        print_err("srv: failed to make ready pipe (%s)", strerror(errno));
+        return false;
+    }
+    /* ensure it's owned by user too, and open in nonblocking mode */
+    if (fchownat(
+        lgn.dirfd, "ready", lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
+    ) || ((lgn.userpipe = openat(
+        lgn.dirfd, "ready", O_NONBLOCK | O_RDONLY
+    )) < 0)) {
+        print_err(
+            "srv: failed to set up ready pipe (%s)", strerror(errno)
+        );
         unlinkat(lgn.dirfd, "ready", 0);
-        if (mkfifoat(lgn.dirfd, "ready", 0700) < 0) {
-            print_err("srv: failed to make ready pipe (%s)", strerror(errno));
-            return false;
-        }
-        /* ensure it's owned by user too, and open in nonblocking mode */
-        if (fchownat(
-            lgn.dirfd, "ready", lgn.uid, lgn.gid, AT_SYMLINK_NOFOLLOW
-        ) || ((lgn.userpipe = openat(
-            lgn.dirfd, "ready", O_NONBLOCK | O_RDONLY
-        )) < 0)) {
-            print_err(
-                "srv: failed to set up ready pipe (%s)", strerror(errno)
-            );
-            unlinkat(lgn.dirfd, "ready", 0);
-            lgn.remove_sdir();
-            return false;
-        }
+        lgn.remove_sdir();
+        return false;
     }
     /* set up the timer, issue SIGLARM when it fires */
     print_dbg("srv: timer set");
@@ -209,6 +204,9 @@ static bool srv_start(login &lgn) {
         close(sigpipe[0]);
         close(sigpipe[1]);
         /* and run the login */
+        bool has_backend = !cdata->disable && (
+            (lgn.uid != 0) || cdata->root_session
+        );
         srv_child(
             lgn,
             has_backend ? cdata->backend.data() : nullptr,

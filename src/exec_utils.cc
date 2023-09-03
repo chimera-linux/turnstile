@@ -280,13 +280,25 @@ fail:
 }
 
 /* dummy "service manager" child process with none backend */
-static void srv_dummy() {
+static void srv_dummy(unsigned int uid) {
     /* block all signals except the ones we need to terminate */
     sigset_t mask;
     sigfillset(&mask);
     /* kill/stop are ignored, but term is not */
     sigdelset(&mask, SIGTERM);
     sigprocmask(SIG_SETMASK, &mask, nullptr);
+    /* mark as ready */
+    char path[4096];
+    std::snprintf(
+        path, sizeof(path), "%s/%s/%u/ready", RUN_PATH, SOCK_DIR, uid
+    );
+    FILE *ready = std::fopen(path, "w");
+    if (!ready) {
+        perror("srv: could not open readiness fifo");
+        exit(1);
+    }
+    std::fprintf(ready, "boop\n");
+    std::fclose(ready);
     /* this will sleep until a termination signal wakes it */
     pause();
     /* in which case just exit */
@@ -337,7 +349,7 @@ void srv_child(login &lgn, char const *backend, bool make_rundir) {
     }
     /* dummy service manager if requested */
     if (!backend) {
-        srv_dummy();
+        srv_dummy(lgn.uid);
         return;
     }
     /* change directory to home, fall back to / or error */
