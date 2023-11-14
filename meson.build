@@ -1,9 +1,10 @@
 project(
     'turnstile',
-    ['cpp'],
+    ['cpp', 'c'],
     version: '0.1.8',
     default_options: [
-        'cpp_std=c++17', 'warning_level=3', 'buildtype=debugoptimized',
+        'cpp_std=c++17', 'c_std=c11', 'warning_level=3',
+        'buildtype=debugoptimized',
     ],
     license: 'BSD-2-Clause'
 )
@@ -48,7 +49,23 @@ configure_file(output: 'config.hh', configuration: conf_data)
 
 extra_inc = [include_directories('src')]
 
-add_project_arguments('-D_BSD_SOURCE', language: 'cpp')
+add_project_arguments('-D_BSD_SOURCE', language: ['c', 'cpp'])
+
+lib_sources = [
+    'src/lib_api.c',
+    'src/lib_backend_none.c',
+    'src/lib_backend_turnstile.c',
+]
+
+lib = library(
+    'turnstile', lib_sources,
+    version: meson.project_version(),
+    include_directories: extra_inc + [include_directories('include')],
+    install: true,
+    gnu_symbol_visibility: 'hidden',
+)
+
+install_headers('include/turnstile.h')
 
 daemon_sources = [
     'src/turnstiled.cc',
