@@ -353,7 +353,7 @@ void srv_child(login &lgn, char const *backend, bool make_rundir) {
         return;
     }
     /* change directory to home, fall back to / or error */
-    if ((chdir(lgn.homedir.data()) < 0) || (chdir("/") < 0)) {
+    if ((chdir(lgn.homedir.data()) < 0) && (chdir("/") < 0)) {
         perror("srv: failed to change directory");
         return;
     }
