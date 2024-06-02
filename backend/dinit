@@ -31,7 +31,7 @@
 # Note that the script *must* exec the service manager directly, i.e. the
 # service manager must fully replace the shell process for this to work.
 #
-# Copyright 2023 Daniel "q66" Kolesa <q66@chimera-linux.org>
+# Copyright 2023 q66 <q66@chimera-linux.org>
 # License: BSD-2-Clause
 #
 

@@ -1,6 +1,6 @@
 /* defines the simple protocol between the daemon and the PAM module
  *
- * Copyright 2021 Daniel "q66" Kolesa <q66@chimera-linux.org>
+ * Copyright 2021 q66 <q66@chimera-linux.org>
  * License: BSD-2-Clause
  */
 

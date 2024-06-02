@@ -7,7 +7,7 @@
  * takes care of tracking when a session needs ending on the
  * daemon side (once all connections are gone)
  *
- * Copyright 2021 Daniel "q66" Kolesa <q66@chimera-linux.org>
+ * Copyright 2021 q66 <q66@chimera-linux.org>
  * License: BSD-2-Clause
  */
 
