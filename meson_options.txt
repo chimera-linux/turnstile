@@ -29,12 +29,16 @@ option('pam_moddir',
 )
 
 option('manage_rundir',
-   type: 'boolean', value: false,
-   description: 'Whether to manage rundir by default'
+    type: 'boolean', value: false,
+    description: 'Whether to manage rundir by default'
 )
 
 option('man',
-   type: 'boolean', value: true,
-   description: 'Whether to generate manpages'
+    type: 'boolean', value: true,
+    description: 'Whether to generate manpages'
 )
 
+option('library',
+    type: 'feature', value: 'disabled',
+    description: 'Whether to build the library'
+)

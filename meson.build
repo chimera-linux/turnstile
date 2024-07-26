@@ -52,21 +52,23 @@ extra_inc = [include_directories('src')]
 
 add_project_arguments('-D_BSD_SOURCE', language: ['c', 'cpp'])
 
-lib_sources = [
-    'src/lib_api.c',
-    'src/lib_backend_none.c',
-    'src/lib_backend_turnstile.c',
-]
+if get_option('library').enabled()
+    lib_sources = [
+        'src/lib_api.c',
+        'src/lib_backend_none.c',
+        'src/lib_backend_turnstile.c',
+    ]
 
-lib = library(
-    'turnstile', lib_sources,
-    version: meson.project_version(),
-    include_directories: extra_inc + [include_directories('include')],
-    install: true,
-    gnu_symbol_visibility: 'hidden',
-)
+    lib = library(
+        'turnstile', lib_sources,
+        version: meson.project_version(),
+        include_directories: extra_inc + [include_directories('include')],
+        install: true,
+        gnu_symbol_visibility: 'hidden',
+    )
 
-install_headers('include/turnstile.h')
+    install_headers('include/turnstile.h')
+endif
 
 daemon_sources = [
     'src/turnstiled.cc',
