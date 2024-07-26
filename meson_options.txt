@@ -23,6 +23,11 @@ option('statedir',
     description: 'The state directory relative to localstatedir'
 )
 
+option('pamdir',
+    type: 'string', value: '',
+    description: 'Override the path where PAM files go'
+)
+
 option('pam_moddir',
     type: 'string', value: '',
     description: 'Where to install the PAM module (leave empty to autodetect)'

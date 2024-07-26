@@ -87,6 +87,7 @@ daemon = executable(
 )
 
 pam_moddir = get_option('pam_moddir')
+pamdir = get_option('pamdir')
 
 if pam_moddir == ''
     pam_moddir = join_paths(
@@ -94,6 +95,10 @@ if pam_moddir == ''
         'security'
     )
     message('Detected PAM module directory:', pam_moddir)
+endif
+
+if pamdir == ''
+  pamdir = join_paths(get_option('sysconfdir'), 'pam.d')
 endif
 
 pam_mod = shared_module(
@@ -116,7 +121,7 @@ endif
 
 install_data(
     'data/pam/turnstiled',
-    install_dir: join_paths(get_option('sysconfdir'), 'pam.d'),
+    install_dir: pamdir,
     install_mode: 'rw-r--r--'
 )
 
