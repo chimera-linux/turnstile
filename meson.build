@@ -164,6 +164,8 @@ cscd = configure_file(
     configuration: uconf_data
 )
 
+fs = import('fs')
+
 if get_option('man')
     scdoc_prog = find_program(
         scdoc_dep.get_pkgconfig_variable('scdoc'),
@@ -173,23 +175,19 @@ if get_option('man')
     mandir = get_option('mandir')
 
     man_files = [
-        ['src/turnstiled.8.scd', false],
-        ['src/pam_turnstile.8.scd', false],
-        [cscd, true],
+        'src/turnstiled.8.scd',
+        'src/pam_turnstile.8.scd',
+        cscd,
     ]
 
-    foreach farr: man_files
-        if farr[1]
-            filename = farr[0].full_path()
-        else
-            filename = farr[0]
-        endif
-        section = '@0@'.format(filename).split('.')[-2]
-        output = '@0@'.format(filename).split('/')[-1].replace('.scd', '')
+    foreach fobj: man_files
+        filename = fs.name(fobj)
+        output = fs.replace_suffix(filename, '')
+        section = output.split('.')[-1]
 
         custom_target(
             output,
-            input: farr[0],
+            input: fobj,
             capture: true,
             output: output,
             command: [
