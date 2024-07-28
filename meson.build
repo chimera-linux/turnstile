@@ -173,18 +173,23 @@ if get_option('man')
     mandir = get_option('mandir')
 
     man_files = [
-        'src/turnstiled.8.scd',
-        'src/pam_turnstile.8.scd',
-        cscd,
+        ['src/turnstiled.8.scd', false],
+        ['src/pam_turnstile.8.scd', false],
+        [cscd, true],
     ]
 
-    foreach filename: man_files
+    foreach farr: man_files
+        if farr[1]
+            filename = farr[0].full_path()
+        else
+            filename = farr[0]
+        endif
         section = '@0@'.format(filename).split('.')[-2]
         output = '@0@'.format(filename).split('/')[-1].replace('.scd', '')
 
         custom_target(
             output,
-            input: filename,
+            input: farr[0],
             capture: true,
             output: output,
             command: [
