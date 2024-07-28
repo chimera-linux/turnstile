@@ -99,7 +99,8 @@ backend, which is tasked with the `run` action.
 The backend is a little helper program that can be written in any language, it
 can e.g. be a shell script. It is started with a clean environment with many
 of the common environment variables, such as `HOME`, `USER`, `LOGNAME`, `SHELL`,
-`PATH` and others, freshly initialized. Additionally, it runs within a PAM
+`PATH` and others, freshly initialized. Typically it is expected to source
+the system `/etc/profile` for `/bin/sh`. Additionally, it runs within a PAM
 session (without authentication), which persists for the lifetime of the
 login, so PAM environment, resource limits and so on are also set up.
 It may also be a good idea to put `pam_elogind` or `pam_systemd` in there in

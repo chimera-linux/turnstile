@@ -59,6 +59,10 @@ fi
 
 shift $#
 
+# source system profile mainly for profile.d
+# do it before switching to set -e etc.
+[ -r /etc/profile ] && . /etc/profile
+
 # be strict
 set -e
 

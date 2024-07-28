@@ -3,6 +3,9 @@
 # This is the turnstile dinit backend. It accepts the action as its first
 # argument, which is either "ready", "run", or "stop". The backend can be
 # written in any language, in this case the shebang is used to run it.
+# The system profile (but not user profile) for /bin/sh is sourced before
+# anything is run, in order to include profile.d snippets into the
+# activation environment.
 #
 # It also serves as an example of how to implement such backend.
 #
@@ -68,6 +71,10 @@ if [ -z "$HOME" -o ! -d "$HOME" ]; then
 fi
 
 shift $#
+
+# source system profile mainly for profile.d
+# do it before switching to set -e etc.
+[ -r /etc/profile ] && . /etc/profile
 
 # be strict
 set -e
