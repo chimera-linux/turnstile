@@ -8,7 +8,7 @@
 #
 # Arguments for "ready":
 #
-# ready_sv: path to the service directory
+# ready_sv: path to the scan directory
 #
 # Arguments for "run":
 #
@@ -80,8 +80,8 @@ set -e
 
 # set a bunch of defaults in case the conf cannot be read or is mangled
 
-if [ -z "$services_dir" ]; then
-    services_dir="${HOME}/.config/s6.d"
+if [ -z "$scan_dir" ]; then
+    scan_dir="${HOME}/.config/s6.d"
 fi
 
-exec s6-svscan -d 3 "$services_dir" 3>"$S6_READY_PIPE"
+exec s6-svscan -d 3 "$scan_dir" 3>"$S6_READY_PIPE"
