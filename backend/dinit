@@ -46,7 +46,7 @@ case "$1" in
             echo "dinit: invalid control socket '$2'" >&2
             exit 69
         fi
-        exec dinitctl --socket-path "$2" start boot
+        exec dinitctl --socket-path "$2" start login.target
         ;;
     stop)
         exec kill -s TERM "$2"
@@ -109,6 +109,7 @@ mkdir -p "${boot_dir}" > /dev/null 2>&1 || :
 # this must succeed
 cat << EOF > "${DINIT_DIR}/boot"
 type = internal
+depends-on = graphical.target
 depends-on = system
 waits-for.d = ${boot_dir}
 EOF
@@ -117,6 +118,17 @@ EOF
 cat << EOF > "${DINIT_DIR}/system"
 type = internal
 waits-for.d = ${system_boot_dir}
+EOF
+
+# this is needed for login to proceed
+cat << EOF > "${DINIT_DIR}/login.target"
+type = internal
+EOF
+
+# this is not necessary to have started for login to proceed
+cat << EOF > "${DINIT_DIR}/graphical.target"
+type = triggered
+depends-on = login.target
 EOF
 
 exec dinit --user --ready-fd 3 --services-dir "$DINIT_DIR" "$@" 3>"$DINIT_READY_PIPE"
