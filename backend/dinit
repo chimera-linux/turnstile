@@ -109,9 +109,10 @@ mkdir -p "${boot_dir}" > /dev/null 2>&1 || :
 # this must succeed
 cat << EOF > "${DINIT_DIR}/boot"
 type = internal
-depends-on = graphical.target
 depends-on = system
 waits-for.d = ${boot_dir}
+depends-on = login.target
+depends-ms = graphical.target
 EOF
 
 # this must also succeed
