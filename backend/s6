@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# This is the turnstile s6 backend. It accepts the action as its first
+# argument, which is either "ready", "run", or "stop". In case of "run", it's
+# invoked directly through /bin/sh as if it was a login shell, and therefore
+# it has acccess to shell profile, and the shebang is functionally useless but
+# should be preserved as a convention. For "ready", it's a regular shell.
+#
+# Arguments for "ready":
+#
+# ready_sv: path to the scan directory
+#
+# Arguments for "run":
+#
+# ready_p:  path to named pipe (fifo) that should be poked with a string; this
+#           will be passed to the "ready" script of the sequence as its sole
+#           argument (here this is a control socket path)
+# srvdir:   an internal directory that can be used by the service manager
+#           for any purpose (usually to keep track of its state)
+# confdir:  the path where turnstile's configuration data reside, used
+#           to source the configuration file
+#
+# Arguments for "stop":
+#
+# pid:      the PID of the service manager to stop (gracefully); it should
+#           terminate the services it's running and then stop itself
+#
+# How the script manages its configuration and so on is up to the script.
+#
+# Note that the script *must* exec the service manager directly, i.e. the
+# service manager must fully replace the shell process for this to work.
+#
+# Copyright 2024 cnt0 <ilelkin@icloud.com>
+# License: BSD-2-Clause
+#
+
+case "$1" in
+    run) ;;
+    ready)
+        if [ ! -d "$2" ]; then
+            # must be a service directory
+            echo "s6: invalid service directory '$2'" >&2
+            exit 69
+        fi
+        exec s6-svscan "$2"
+        ;;
+    stop)
+        exec kill -s TERM "$2"
+        ;;
+    *)
+        exit 32
+        ;;
+esac
+
+S6_READY_PIPE="$2"
+S6_DIR="$3"
+S6_CONF="$4/s6.conf"
+
+if [ ! -p "$S6_READY_PIPE" -o ! -d "$S6_DIR" ]; then
+    echo "s6: invalid input argument(s)" >&2
+    exit 69
+fi
+
+if [ -z "$HOME" -o ! -d "$HOME" ]; then
+    echo "s6: invalid home directory" >&2
+    exit 70
+fi
+
+shift $#
+
+# source system profile mainly for profile.d
+# do it before switching to set -e etc.
+[ -r /etc/profile ] && . /etc/profile
+
+# be strict
+set -e
+
+# source the conf
+[ -r "$S6_CONF" ] && . "$S6_CONF"
+
+# set a bunch of defaults in case the conf cannot be read or is mangled
+
+if [ -z "$scan_dir" ]; then
+    scan_dir="${HOME}/.config/s6.d"
+fi
+
+exec s6-svscan -d 3 "$scan_dir" 3>"$S6_READY_PIPE"
