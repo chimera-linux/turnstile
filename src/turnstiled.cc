@@ -552,6 +552,7 @@ static bool recv_str(
         } else if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
             return true;
         }
+        return false;
     }
     outs.append(buf, ret);
     sess.str_left -= ret;
