@@ -24,6 +24,7 @@ scdoc_dep = dependency(
 
 have_dinit = get_option('dinit').enabled()
 have_runit = get_option('runit').enabled()
+have_s6 = get_option('s6').enabled()
 
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))
@@ -132,6 +133,8 @@ if default_backend == ''
         default_backend = 'dinit'
     elif have_runit
         default_backend = 'runit'
+    elif have_s6
+        default_backend = 's6'
     else
         default_backend = 'none'
     endif
