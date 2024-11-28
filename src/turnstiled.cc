@@ -1130,7 +1130,7 @@ static bool fd_handle_pipe(std::size_t i) {
             if (read(fds[i].fd, &c, 1) != 1) {
                 break;
             }
-            if (c == '\0') {
+            if ((c == '\0') || (lgn->srvstr.size() >= PATH_MAX)) {
                 /* done receiving */
                 done = true;
                 break;
