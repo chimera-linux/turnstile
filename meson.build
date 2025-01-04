@@ -168,7 +168,7 @@ fs = import('fs')
 
 if get_option('man')
     scdoc_prog = find_program(
-        scdoc_dep.get_pkgconfig_variable('scdoc'),
+        scdoc_dep.get_variable(pkgconfig: 'scdoc'),
         native: true
     )
     sh = find_program('sh', native: true)
@@ -191,7 +191,7 @@ if get_option('man')
             capture: true,
             output: output,
             command: [
-                sh, '-c', '@0@ < @INPUT@'.format(scdoc_prog.path())
+                sh, '-c', '@0@ < @INPUT@'.format(scdoc_prog.full_path())
             ],
             install: true,
             install_dir: '@0@/man@1@'.format(mandir, section)
