@@ -44,11 +44,11 @@ bool get_peer_cred(int fd, uid_t *uid, gid_t *gid, pid_t *pid) {
         return true;
     }
 #elif defined(LOCAL_PEERCRED)
-    /* FreeBSD */
+    /* FreeBSD or Darwin */
     struct xucred cr;
     socklen_t crl = sizeof(cr);
     if (
-        !getsockopt(fd, 0, LOCAL_PEERCRED, &cr, &crl) && (crl == sizeof(cr)) &&
+        !getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &cr, &crl) && (crl == sizeof(cr)) &&
         (cr.cr_version == XUCRED_VERSION)
     ) {
         if (uid) {
