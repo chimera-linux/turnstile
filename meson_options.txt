@@ -8,6 +8,11 @@ option('runit',
     description: 'Whether to install runit-related backend and data'
 )
 
+option('s6',
+    type: 'feature', value: 'disabled',
+    description: 'Whether to install s6-related backend and data'
+)
+
 option('default_backend',
     type: 'string', value: '',
     description: 'Override the default backend'
