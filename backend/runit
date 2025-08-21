@@ -82,6 +82,11 @@ cat << EOF > "${services_dir}/${ready_sv}/run"
 #!/bin/sh
 [ -r ./conf ] && . ./conf
 [ -n "\$core_services" ] && SVDIR=".." sv start \$core_services
+if [ -n "\$core_services" ]; then
+    until SVDIR=".." sv check \$core_services; do
+        :
+    done
+fi
 [ -p "$RUNIT_READY_PIPE" ] && printf "${services_dir}/${ready_sv}" > "$RUNIT_READY_PIPE"
 exec pause
 EOF
