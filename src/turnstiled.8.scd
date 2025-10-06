@@ -17,7 +17,7 @@ For configuration, see *turnstiled.conf*(5).
 
 Upon user login, it spawns an instance of the chosen service manager for the
 user, while upon last logout, it shuts down this instance (unless configured
-to longer).
+to linger).
 
 User logins and logouts are communicated via *pam\_turnstile*(8).
 
