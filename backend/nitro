@@ -1,0 +1,100 @@
+#!/bin/sh
+#
+# This is the turnstile nitro backend. It accepts the action as its first
+# argument, which is either "ready", "run", or "stop". In case of "run", it's
+# invoked directly through /bin/sh as if it was a login shell, and therefore
+# it has acccess to shell profile, and the shebang is functionally useless but
+# should be preserved as a convention. For "ready", it's a regular shell.
+#
+# Arguments for "ready":
+#
+# srvstr: path to the readiness indicator temporary file
+#
+# Arguments for "run":
+#
+# ready_p:  readiness pipe (fifo). has the path to a temporary file created by
+#           nitro SYS/setup written to it.
+# srvdir:   the nitro control socket goes here, as well as the envdir for chpst.
+#           the envdir then gets destructively symlinked to the service_env_dir.
+# confdir:  the path where turnstile's configuration data resides, used
+#           to source the configuration file
+#
+# Arguments for "stop":
+#
+# pid:      the PID of the service manager to stop (gracefully); it should
+#           terminate the services it's running and then stop itself
+#
+# Copyright 2026 toast <code@toast.bunkerlabs.net>
+# License: BSD-2-Clause
+
+log() { echo "$@"; } >&2
+die() { log "$1"; exit "$2"; }
+
+case "$1" in
+    ready) [ -f "$2" ] && exec rm "$2" ||
+        die "nitro: invalid readiness indicator '$2'" 64 ;;
+    run) ;; # continued after esac
+    # nitro gracefully terminates on SIGTERM
+    stop) exec kill "$2" ;;
+    *) exit 32 ;;
+esac
+
+READYP=${2:?readiness pipe unset}
+SRVDIR=${3:?srvdir unset}
+CONFIG=${4:?confdir unset}/nitro.conf
+
+if [ ! -p "$READYP" ]; then
+    die "nitro: invalid input argument(s)" 64
+fi
+
+if [ ! -d "${HOME:?}" ]; then
+    dir "nitro: invalid home directory" 65
+fi
+
+shift $#
+
+# source system profile mainly for profile.d
+# do it before switching to set -e etc.
+[ -r /etc/profile ] && . /etc/profile
+set -e
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+# config defaults in case it's mangled or missing
+: ${services_dir:="${HOME}/.config/nitro.session"} \
+  ${service_env_dir:="${XDG_RUNTIME_DIR:?}/turnstile.env"}
+
+envd="$SRVDIR/env"
+mkdir -pm 0700 "$envd"
+NITRO_SOCK="$SRVDIR/nitro.sock"
+printf "$NITRO_SOCK" >"$envd/NITRO_SOCK"
+
+# destructively symlink the per-manager envdir to the configured one
+if [ -n "$service_env_dir" ]; then
+    [ -d "$(dirname "$service_env_dir")" ] ||
+        die 'nitro: invalid location for service env_dir'
+    # unless we're not managing it
+    if [ ! -e "$service_env_dir" ] || [ -h "$service_env_dir" ]; then
+        ln -sf "$envd" "$service_env_dir"
+    else
+        die "nitro: refusing to overwrite '$service_env_dir'" 73
+    fi
+fi
+
+# this must succeed
+mkdir -p "$services_dir/SYS"
+cat << EOF > "$services_dir/SYS/setup"
+#!/bin/sh
+# DO NOT MODIFY: THIS WILL GET OVERWRITTEN
+# PLACE YOUR SETUP IN ./rc
+[ -r ./rc ] && . ./rc # nitroctl start my core services
+# signal readiness
+if [ -p "$READYP" ]; then
+    touch "$SRVDIR/ready"
+    printf '%s' "$SRVDIR/ready" > "$READYP"
+fi
+EOF
+chmod +x "$services_dir/SYS/setup"
+
+# use envd directly so another manager can run at the same time
+exec env TURNSTILE_ENV_DIR="$envd" NITRO_SOCK="$NITRO_SOCK" \
+    nitro "$services_dir"

@@ -24,6 +24,7 @@ scdoc_dep = dependency(
 
 have_dinit = get_option('dinit').enabled()
 have_runit = get_option('runit').enabled()
+have_nitro = get_option('nitro').enabled()
 
 conf_data = configuration_data()
 conf_data.set_quoted('RUN_PATH', get_option('rundir'))

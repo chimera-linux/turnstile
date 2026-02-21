@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copyright 2026 toast <code@toast.bunkerlabs.net>
+# License: BSD-2-Clause
+
+usage() {
+	cat <<-EOF
+	turnstile-update-nitro-env [VAR] ...
+	Updates values in the shared chpst(8) env dir.
+
+	If VAR is a variable name, the value is taken from the environment.
+	If VAR is VAR=VAL, sets VAR to VAL.
+	EOF
+}
+
+. @CONF_PATH@/backend/nitro.conf
+: ${service_env_dir:="${XDG_RUNTIME_DIR}/turnstile.env"}
+envd=${TURNSTILE_ENV_DIR:-${service_env_dir:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/turnstile.env}}
+
+if [ $# -eq 0 ] || [ "$1" = "-h" ]; then
+	usage
+	exit 0
+fi
+
+for var; do
+	case "$var" in
+	*=*)
+		eval echo "${var#*=}" > "$envd/${var%%=*}"
+		;;
+	*)
+		eval echo '$'"$var" > "$envd/$var"
+		;;
+	esac
+done

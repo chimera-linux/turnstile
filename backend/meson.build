@@ -38,3 +38,27 @@ if have_runit
         install_mode: 'rwxr-xr-x'
     )
 endif
+
+# nitro backend
+if have_nitro
+    install_data(
+        'nitro',
+        install_dir: join_paths(get_option('libexecdir'), 'turnstile'),
+        install_mode: 'rwxr-xr-x'
+    )
+
+    install_data(
+        'nitro.conf',
+        install_dir: join_paths(get_option('sysconfdir'), 'turnstile/backend'),
+        install_mode: 'rw-r--r--'
+    )
+
+    configure_file(
+        input: 'turnstile-update-nitro-env.in',
+        output: 'turnstile-update-nitro-env',
+        configuration: conf_data,
+        install: true,
+        install_dir: get_option('bindir'),
+        install_mode: 'rwxr-xr-x'
+    )
+endif

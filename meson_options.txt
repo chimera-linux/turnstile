@@ -8,6 +8,11 @@ option('runit',
     description: 'Whether to install runit-related backend and data'
 )
 
+option('nitro',
+    type: 'feature', value: 'disabled',
+    description: 'Whether to install nitro-related backend and data'
+)
+
 option('default_backend',
     type: 'string', value: '',
     description: 'Override the default backend'
