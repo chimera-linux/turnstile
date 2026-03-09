@@ -151,4 +151,12 @@ depends-on = graphical.monitor
 depends-on = login.target
 EOF
 
-exec dinit --user --ready-fd 3 --services-dir "$DINIT_DIR" "$@" 3>"$DINIT_READY_PIPE"
+# add environment file support
+USER_ENV="${HOME}/.config/dinit.d/environment"
+ENV_FLAG=""
+
+if [ -f "${USER_ENV}" ]; then
+	ENV_FLAG="--env-file ${USER_ENV}"
+fi
+
+exec dinit --user --ready-fd 3 ${ENV_FLAG} --services-dir "$DINIT_DIR" "$@" 3>"$DINIT_READY_PIPE"
